@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 from openfermion import MolecularData, get_fermion_operator, get_sparse_operator, jordan_wigner
 from openfermionpyscf import run_pyscf
@@ -16,6 +18,8 @@ from optimization_abc_utils import (
     BASIS,
     CHARGE,
     MULTIPLICITY,
+    apply_annihilate,
+    apply_create,
     closed_shell_hf_bitstring,
     compute_spin_rdms_from_statevector,
     compute_spin_rdms_from_subspace_state,
@@ -24,6 +28,54 @@ from optimization_abc_utils import (
     solve_cisd_state,
     use_dense_subspace_ops,
 )
+
+
+def apply_fermion_term_to_bitstring(bitstring: int, term: tuple, n_qubits: int) -> tuple[int | None, int]:
+    """Apply an OpenFermion term to a determinant bitstring."""
+    out = int(bitstring)
+    sign = 1
+    for mode, action in reversed(term):
+        if action == 0:
+            out, term_sign = apply_annihilate(out, mode, n_qubits)
+        else:
+            out, term_sign = apply_create(out, mode, n_qubits)
+        if out is None:
+            return None, 0
+        sign *= term_sign
+    return out, sign
+
+
+def build_fixed_n_hamiltonian_direct(h_fermion, basis_bitstrings: list[int], n_qubits: int) -> sp.csc_matrix:
+    """Build the fixed-N Hamiltonian without allocating the full Fock-space operator."""
+    det_to_idx = {int(bitstring): idx for idx, bitstring in enumerate(basis_bitstrings)}
+    rows: list[int] = []
+    cols: list[int] = []
+    data: list[complex] = []
+    dim_sub = len(basis_bitstrings)
+
+    for term, coef in h_fermion.terms.items():
+        coef = complex(coef)
+        if term == ():
+            rows.extend(range(dim_sub))
+            cols.extend(range(dim_sub))
+            data.extend([coef] * dim_sub)
+            continue
+
+        for col, ket in enumerate(basis_bitstrings):
+            bra, sign = apply_fermion_term_to_bitstring(ket, term, n_qubits)
+            if bra is None:
+                continue
+            row = det_to_idx.get(int(bra))
+            if row is None:
+                continue
+            rows.append(row)
+            cols.append(col)
+            data.append(coef * sign)
+
+    h_sub = sp.coo_matrix((data, (rows, cols)), shape=(dim_sub, dim_sub), dtype=np.complex128)
+    h_sub = h_sub.tocsc()
+    h_sub = 0.5 * (h_sub + h_sub.getH())
+    return h_sub.tocsc()
 
 
 def build_reference_state_with_pyscf(
@@ -36,6 +88,7 @@ def build_reference_state_with_pyscf(
     popcount_fn=popcount,
     solve_cisd_fn=solve_cisd_state,
     hf_bitstring_fn=closed_shell_hf_bitstring,
+    compute_rdms: bool = False,
 ) -> dict[str, Any]:
     """Run PySCF and build fixed-N Hamiltonian, FCI ground state, and CISD reference."""
     mol = MolecularData(
@@ -45,7 +98,7 @@ def build_reference_state_with_pyscf(
         charge=charge,
         description=description,
     )
-    mol = run_pyscf(mol, run_scf=True, run_fci=False, run_cisd=True)
+    mol = run_pyscf(mol, run_scf=True, run_fci=False, run_cisd=False)
     energy_hf = float(mol.hf_energy)
     orbital_energies = np.asarray(mol.orbital_energies, dtype=float)
 
@@ -58,37 +111,49 @@ def build_reference_state_with_pyscf(
 
     h_interaction = mol.get_molecular_hamiltonian()
     h_fermion = get_fermion_operator(h_interaction)
-    h_qubit = jordan_wigner(h_fermion)
-    h_full = get_sparse_operator(h_qubit, n_qubits).tocsc()
 
     basis_bitstrings = [
         bitstring for bitstring in range(dim) if popcount_fn(bitstring) == n_electrons
     ]
     basis_idx = np.array(basis_bitstrings, dtype=int)
-    h_sub = h_full[basis_idx, :][:, basis_idx].tocsc()
+
+    h_full_keep = None
+    if use_dense:
+        h_qubit = jordan_wigner(h_fermion)
+        h_full = get_sparse_operator(h_qubit, n_qubits).tocsc()
+        h_sub = h_full[basis_idx, :][:, basis_idx].tocsc()
+        h_full_keep = h_full
+    else:
+        print(
+            f"  [memory] fixed-N subspace dim={dim_sub} > dense limit; "
+            "building h_sub directly without h_full."
+        )
+        h_sub = build_fixed_n_hamiltonian_direct(h_fermion, basis_bitstrings, n_qubits)
+        gc.collect()
+
     evals, evecs = spla.eigsh(h_sub, k=1, which="SA")
     energy_fci = float(np.real(evals[0]))
     v_sub = evecs[:, 0]
 
-    h_full_keep = h_full if use_dense else None
     psi_full: np.ndarray | None
-    if use_dense:
+    if compute_rdms and use_dense:
         psi_full = np.zeros(dim, dtype=np.complex128)
         psi_full[basis_idx] = v_sub
         psi_full /= np.linalg.norm(psi_full)
     else:
         psi_full = None
-        del h_full
 
     hf_bitstring = hf_bitstring_fn(n_electrons, n_spatial)
     energy_cisd, _, _ = solve_cisd_fn(h_sub, basis_bitstrings, hf_bitstring, n_qubits)
 
-    if use_dense:
+    if compute_rdms and use_dense and psi_full is not None:
         gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(psi_full, n_spatial)
-    else:
+    elif compute_rdms:
         gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_subspace_state(
             v_sub, basis_bitstrings, n_spatial
         )
+    else:
+        gamma_a = gamma_b = gamma_ab = None
 
     return {
         "mol": mol,

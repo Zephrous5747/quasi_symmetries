@@ -111,12 +111,17 @@ def load_reference_state(
     popcount_fn=popcount,
     solve_cisd_fn=solve_cisd_state,
     hf_bitstring_fn=closed_shell_hf_bitstring,
+    load_hamiltonian: bool = True,
+    load_full_hamiltonian: bool = True,
+    compute_rdms: bool = True,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """
     Load a precomputed reference state from HDF5.
 
-    Recomputes RDMs from the stored FCI vector (no PySCF).
+    By default, recomputes RDMs from the stored FCI vector (no PySCF).
+    Memory-heavy consumers can disable Hamiltonian loading and RDM construction
+    when they only need the fixed-N FCI vector and determinant basis.
     """
     path = cache_path(molecule, x, cache_dir=cache_dir, **kwargs)
     if not path.is_file():
@@ -138,15 +143,17 @@ def load_reference_state(
         use_dense = bool(handle.attrs["use_dense"])
         dim_sub = int(handle.attrs["dim_sub"])
 
-        shape = tuple(int(v) for v in handle.attrs["h_sub_shape"])
-        h_sub = sp.csr_matrix(
-            (
-                handle["h_sub_data"][()],
-                handle["h_sub_indices"][()],
-                handle["h_sub_indptr"][()],
-            ),
-            shape=shape,
-        ).tocsc()
+        h_sub = None
+        if load_hamiltonian:
+            shape = tuple(int(v) for v in handle.attrs["h_sub_shape"])
+            h_sub = sp.csr_matrix(
+                (
+                    handle["h_sub_data"][()],
+                    handle["h_sub_indices"][()],
+                    handle["h_sub_indptr"][()],
+                ),
+                shape=shape,
+            ).tocsc()
 
         v_sub = np.asarray(handle["v_sub"][()], dtype=np.complex128)
         basis_bitstrings = [int(b) for b in handle["basis_bitstrings"][()]]
@@ -157,7 +164,7 @@ def load_reference_state(
         )
 
         h_full = None
-        if "h_full_data" in handle:
+        if load_full_hamiltonian and "h_full_data" in handle:
             full_shape = tuple(int(v) for v in handle.attrs["h_full_shape"])
             h_full = sp.csr_matrix(
                 (
@@ -168,25 +175,27 @@ def load_reference_state(
                 shape=full_shape,
             ).tocsc()
 
-    basis_idx = np.array(basis_bitstrings, dtype=int)
     dim = 1 << n_qubits
 
     psi_full: np.ndarray | None
-    if use_dense and h_full is not None:
+    if compute_rdms and use_dense:
+        basis_idx = np.array(basis_bitstrings, dtype=int)
         psi_full = np.zeros(dim, dtype=np.complex128)
         psi_full[basis_idx] = v_sub
         psi_full /= np.linalg.norm(psi_full)
     else:
         psi_full = None
 
-    if use_dense and psi_full is not None:
+    if compute_rdms and use_dense and psi_full is not None:
         gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_statevector(psi_full, n_spatial)
-    else:
+    elif compute_rdms:
         gamma_a, gamma_b, gamma_ab = compute_spin_rdms_from_subspace_state(
             v_sub, basis_bitstrings, n_spatial
         )
+    else:
+        gamma_a = gamma_b = gamma_ab = None
 
-    if not use_dense:
+    if not use_dense and compute_rdms:
         print(
             f"  [memory] fixed-N subspace dim={dim_sub} > dense limit; "
             "skipping dense H / R / entropy / sector-energy diagnostics."
