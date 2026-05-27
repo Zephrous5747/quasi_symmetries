@@ -1,6 +1,8 @@
 """Unified optimization workflows for quasi-symmetry experiments."""
 
 import csv
+import json
+from pathlib import Path
 from typing import Any, Iterable
 import math
 
@@ -39,6 +41,39 @@ WORKFLOW_FIXED_ABC = "fixed_abc"
 WORKFLOW_SHARED_ABC = "shared_abc"
 WORKFLOW_LOCAL_ABC = "local_abc"
 VALID_WORKFLOWS = {WORKFLOW_FIXED_ABC, WORKFLOW_SHARED_ABC, WORKFLOW_LOCAL_ABC}
+DEFAULT_OPT_RESULTS_DIR = "opt_results"
+OPT_RESULT_FIELDNAMES = [
+    "Workflow",
+    "Molecule",
+    "Geometry_Param",
+    "E_HF",
+    "E_FCI",
+    "E_CISD",
+    "n_spatial",
+    "n_electrons",
+    "Optimization_Kind",
+    "Optimizer_Method",
+    "Optimizer_Success",
+    "Optimizer_Status",
+    "Optimizer_Message",
+    "Optimizer_Nit",
+    "Optimizer_Nfev",
+    "V_Identity",
+    "V_Optimized",
+    "a",
+    "b",
+    "c",
+    "Pairs",
+    "Params",
+    "Thetas",
+    "Operator_Angles",
+    "U_Spatial",
+    "Exp_Omega",
+    "Local_ABC",
+    "Log_V",
+    "Log_NOmega",
+    "Log_Params",
+]
 
 # Representative N2 bond lengths (Å): equilibrium, stretched (strong correlation), dissociative.
 N2_BOND_EQUILIBRIUM = 1.2
@@ -72,6 +107,97 @@ def _default_csv_name(molecule: str, workflow: str) -> str:
         WORKFLOW_LOCAL_ABC: "local_abc",
     }[workflow]
     return f"{molecule}_quasi_symmetry_{suffix}.csv"
+
+
+def _default_opt_results_path(molecule: str, workflow: str) -> str:
+    return str(Path(DEFAULT_OPT_RESULTS_DIR) / _default_csv_name(molecule, workflow))
+
+
+def _to_jsonable(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, tuple):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _to_jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _json_data(value: Any) -> str:
+    if value is None:
+        return ""
+    return json.dumps(_to_jsonable(value))
+
+
+def _opt_log_field(best: dict[str, Any], field: str) -> str:
+    log = best.get("log")
+    if log is None:
+        return ""
+    return _json_data(getattr(log, field, None))
+
+
+def _optimizer_metadata(res: Any) -> dict[str, Any]:
+    return {
+        "Optimizer_Method": OPT_METHOD,
+        "Optimizer_Success": bool(getattr(res, "success", False)),
+        "Optimizer_Status": getattr(res, "status", ""),
+        "Optimizer_Message": str(getattr(res, "message", "")),
+        "Optimizer_Nit": getattr(res, "nit", ""),
+        "Optimizer_Nfev": getattr(res, "nfev", ""),
+    }
+
+
+def _optimization_result_row(
+    *,
+    workflow: str,
+    molecule: str,
+    x: float,
+    ref: dict[str, Any],
+    optimization_kind: str,
+    best: dict[str, Any],
+    v_identity: float,
+    v_optimized: float,
+    u_optimized: np.ndarray,
+    exp_omega: np.ndarray,
+    a: float,
+    b: float,
+    c: float,
+    params: np.ndarray,
+    thetas: np.ndarray,
+    operator_angles: np.ndarray,
+    local_abcs: Any = None,
+) -> dict[str, Any]:
+    return {
+        "Workflow": workflow,
+        "Molecule": molecule,
+        "Geometry_Param": x,
+        "E_HF": ref["energy_hf"],
+        "E_FCI": ref["energy_fci"],
+        "E_CISD": ref["energy_cisd"],
+        "n_spatial": ref["n_spatial"],
+        "n_electrons": ref["n_electrons"],
+        "Optimization_Kind": optimization_kind,
+        **_optimizer_metadata(best["res"]),
+        "V_Identity": v_identity,
+        "V_Optimized": v_optimized,
+        "a": a,
+        "b": b,
+        "c": c,
+        "Pairs": _json_data(best["pairs"]),
+        "Params": _json_data(params),
+        "Thetas": _json_data(thetas),
+        "Operator_Angles": _json_data(operator_angles),
+        "U_Spatial": _json_data(u_optimized),
+        "Exp_Omega": _json_data(exp_omega),
+        "Local_ABC": _json_data(local_abcs),
+        "Log_V": _opt_log_field(best, "V"),
+        "Log_NOmega": _opt_log_field(best, "nOmega"),
+        "Log_Params": _opt_log_field(best, "x"),
+    }
 
 
 def _skipped_entropy_energy_fields() -> dict[str, Any]:
@@ -332,51 +458,28 @@ def evaluate_single_point_fixed_abc(
     v_optimized, _, u_optimized, _, _, _ = variance_restricted(
         gamma_a, gamma_b, gamma_ab, x_opt, best["pairs"]
     )
-
-    comm_sq_identity, sum_sexp_id, _ = _run_shared_abc_commutativity(
-        ref, molecule, u_identity, a_n, b_n, c_n, "fixed_abc_identity"
-    )
-    comm_sq_optimized, sum_sexp_opt, _ = _run_shared_abc_commutativity(
-        ref, molecule, u_optimized, a_n, b_n, c_n, "fixed_abc_optimized"
+    _, exp_omega, _, _, _, _ = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, x_opt, best["pairs"]
     )
 
-    if ref["use_dense"]:
-        post = _run_dense_entropy_and_energy(
-            ref,
-            molecule,
-            energy_fci,
-            a_n,
-            b_n,
-            c_n,
-            u_identity,
-            a_n,
-            b_n,
-            c_n,
-            u_optimized,
-            "fixed_abc_identity",
-            "fixed_abc_optimized",
-        )
-    else:
-        post = _skipped_entropy_energy_fields()
-
-    return {
-        "Workflow": WORKFLOW_FIXED_ABC,
-        "Molecule": molecule,
-        "Geometry_Param": x,
-        "E_HF": ref["energy_hf"],
-        "E_FCI": energy_fci,
-        "E_CISD": ref["energy_cisd"],
-        "V_Identity": v_identity,
-        "V_Optimized": v_optimized,
-        "a": a_n,
-        "b": b_n,
-        "c": c_n,
-        "Sum_CommSq_Identity": comm_sq_identity,
-        "Sum_CommSq_Optimized": comm_sq_optimized,
-        "Sum_Sexp_Identity": sum_sexp_id if EVAL_STATE_SPECIFIC_COMMUTATIVITY else np.nan,
-        "Sum_Sexp_Optimized": sum_sexp_opt if EVAL_STATE_SPECIFIC_COMMUTATIVITY else np.nan,
-        **post,
-    }
+    return _optimization_result_row(
+        workflow=WORKFLOW_FIXED_ABC,
+        molecule=molecule,
+        x=x,
+        ref=ref,
+        optimization_kind="unitary_only_fixed_abc",
+        best=best,
+        v_identity=v_identity,
+        v_optimized=v_optimized,
+        u_optimized=u_optimized,
+        exp_omega=exp_omega,
+        a=a_n,
+        b=b_n,
+        c=c_n,
+        params=x_opt,
+        thetas=np.asarray(best["res"].x, dtype=float),
+        operator_angles=np.array([best["phi1"], best["phi2"]], dtype=float),
+    )
 
 
 def evaluate_single_point_shared_abc(
@@ -401,50 +504,28 @@ def evaluate_single_point_shared_abc(
     v_optimized, _, u_optimized, a_opt, b_opt, c_opt = variance_restricted(
         gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
     )
-
-    comm_sq_identity, sum_sexp_id, _ = _run_shared_abc_commutativity(
-        ref, molecule, u_identity, a_identity, b_identity, c_identity, "identity"
-    )
-    comm_sq_optimized, sum_sexp_opt, _ = _run_shared_abc_commutativity(
-        ref, molecule, u_optimized, a_opt, b_opt, c_opt, "optimized"
+    _, exp_omega, _, _, _, _ = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
     )
 
-    if ref["use_dense"]:
-        post = _run_dense_entropy_and_energy(
-            ref,
-            molecule,
-            energy_fci,
-            a_identity,
-            b_identity,
-            c_identity,
-            u_identity,
-            a_opt,
-            b_opt,
-            c_opt,
-            u_optimized,
-            "identity",
-            "optimized",
-        )
-    else:
-        post = _skipped_entropy_energy_fields()
-
-    return {
-        "Molecule": molecule,
-        "Geometry_Param": x,
-        "E_HF": ref["energy_hf"],
-        "E_FCI": energy_fci,
-        "E_CISD": ref["energy_cisd"],
-        "V_Identity": v_identity,
-        "V_Optimized": v_optimized,
-        "a": a_opt,
-        "b": b_opt,
-        "c": c_opt,
-        "Sum_CommSq_Identity": comm_sq_identity,
-        "Sum_CommSq_Optimized": comm_sq_optimized,
-        "Sum_Sexp_Identity": sum_sexp_id if EVAL_STATE_SPECIFIC_COMMUTATIVITY else np.nan,
-        "Sum_Sexp_Optimized": sum_sexp_opt if EVAL_STATE_SPECIFIC_COMMUTATIVITY else np.nan,
-        **post,
-    }
+    return _optimization_result_row(
+        workflow=WORKFLOW_SHARED_ABC,
+        molecule=molecule,
+        x=x,
+        ref=ref,
+        optimization_kind="unitary_and_shared_abc",
+        best=best,
+        v_identity=v_identity,
+        v_optimized=v_optimized,
+        u_optimized=u_optimized,
+        exp_omega=exp_omega,
+        a=a_opt,
+        b=b_opt,
+        c=c_opt,
+        params=np.asarray(best["res"].x, dtype=float),
+        thetas=np.asarray(best["res"].x[:n_pairs], dtype=float),
+        operator_angles=np.asarray(best["res"].x[n_pairs:], dtype=float),
+    )
 
 
 def _run_local_abc_commutativity(
@@ -515,69 +596,29 @@ def evaluate_single_point_local_abc(
     v_optimized, _, u_optimized, local_abcs_optimized = local_utils.variance_restricted_local_abc(
         gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
     )
-
-    comm_sq_identity, sum_sexp_id = _run_local_abc_commutativity(
-        ref, u_identity, local_abcs_identity
-    )
-    comm_sq_optimized, sum_sexp_opt = _run_local_abc_commutativity(
-        ref, u_optimized, local_abcs_optimized
+    _, exp_omega, _, _ = local_utils.variance_restricted_local_abc(
+        gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
     )
 
-    nan = float("nan")
-    if ref["use_dense"]:
-        h_identity = ref["h_sub"].toarray().astype(np.complex128)
-        psi_identity = ref["v_sub"] / np.linalg.norm(ref["v_sub"])
-        sectors_identity = local_utils.build_generalized_sectors_local_abc(
-            basis_bitstrings, n_spatial, n_qubits, local_abcs_identity
-        )
-        entropy_fine_identity, entropy_coarse_identity, _ = local_utils.shannon_block_decomposition(
-            h_identity, psi_identity, sectors_identity
-        )
-        sectors_optimized = local_utils.build_generalized_sectors_local_abc(
-            basis_bitstrings, n_spatial, n_qubits, local_abcs_optimized
-        )
-        r_opt = local_utils.orbital_rotation_representation_R(
-            u_optimized, basis_bitstrings, n_spatial
-        )
-        h_rot = r_opt.conj().T @ (h_identity @ r_opt)
-        h_rot = 0.5 * (h_rot + h_rot.conj().T)
-        psi_rot = r_opt.conj().T @ psi_identity
-        entropy_fine_optimized, entropy_coarse_optimized, _ = local_utils.shannon_block_decomposition(
-            h_rot, psi_rot, sectors_optimized
-        )
-        dense_skipped = False
-    else:
-        entropy_coarse_identity = entropy_coarse_optimized = nan
-        entropy_fine_identity = entropy_fine_optimized = nan
-        dense_skipped = True
-
-    row: dict[str, Any] = {
-        "Molecule": molecule,
-        "Geometry_Param": x,
-        "E_HF": ref["energy_hf"],
-        "E_FCI": ref["energy_fci"],
-        "E_CISD": ref["energy_cisd"],
-        "V_Identity": v_identity,
-        "V_Optimized": v_optimized,
-        "Sum_CommSq_Identity": comm_sq_identity,
-        "Sum_CommSq_Optimized": comm_sq_optimized,
-        "Sum_Sexp_Identity": sum_sexp_id if local_utils.EVAL_STATE_SPECIFIC_COMMUTATIVITY else nan,
-        "Sum_Sexp_Optimized": sum_sexp_opt if local_utils.EVAL_STATE_SPECIFIC_COMMUTATIVITY else nan,
-        "Coarse_Entropy_Identity": entropy_coarse_identity,
-        "Coarse_Entropy_Optimized": entropy_coarse_optimized,
-        "Fine_Entropy_Identity": entropy_fine_identity,
-        "Fine_Entropy_Optimized": entropy_fine_optimized,
-        "DenseDiagnosticsSkipped": dense_skipped,
-    }
-    for i, (a_i, b_i, c_i) in enumerate(local_abcs_identity):
-        row[f"a_id_{i}"] = a_i
-        row[f"b_id_{i}"] = b_i
-        row[f"c_id_{i}"] = c_i
-    for i, (a_i, b_i, c_i) in enumerate(local_abcs_optimized):
-        row[f"a_opt_{i}"] = a_i
-        row[f"b_opt_{i}"] = b_i
-        row[f"c_opt_{i}"] = c_i
-    return row
+    return _optimization_result_row(
+        workflow=WORKFLOW_LOCAL_ABC,
+        molecule=molecule,
+        x=x,
+        ref=ref,
+        optimization_kind="unitary_and_local_abc",
+        best=best,
+        v_identity=v_identity,
+        v_optimized=v_optimized,
+        u_optimized=u_optimized,
+        exp_omega=exp_omega,
+        a=float("nan"),
+        b=float("nan"),
+        c=float("nan"),
+        params=np.asarray(best["res"].x, dtype=float),
+        thetas=np.asarray(best["res"].x[:n_pairs], dtype=float),
+        operator_angles=np.asarray(best["res"].x[n_pairs:], dtype=float),
+        local_abcs=local_abcs_optimized,
+    )
 
 
 def evaluate_single_point(
@@ -600,14 +641,7 @@ def evaluate_single_point(
 
 
 def _fieldnames_for_workflow(workflow: str, molecule: str, **kwargs: Any) -> list[str] | None:
-    if workflow == WORKFLOW_LOCAL_ABC:
-        builder = getattr(local_utils, "get_fieldnames_for_molecule", None)
-        if callable(builder):
-            names = builder(molecule, **kwargs)
-            if "Workflow" not in names:
-                names = ["Workflow", *names]
-            return names
-    return None
+    return OPT_RESULT_FIELDNAMES
 
 
 def run_scan(
@@ -624,16 +658,15 @@ def run_scan(
     fieldnames = _fieldnames_for_workflow(workflow, molecule, **kwargs)
 
     if csv_filename is not None:
-        with open(csv_filename, mode="w", newline="", encoding="utf-8") as handle:
-            writer: csv.DictWriter[str] | None = None
+        csv_path = Path(csv_filename)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(csv_path, mode="w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames or OPT_RESULT_FIELDNAMES)
+            writer.writeheader()
             for x in grid:
                 try:
                     row = evaluate_single_point(workflow=workflow, molecule=molecule, x=float(x), **kwargs)
                     results.append(row)
-                    if writer is None:
-                        names = fieldnames or list(row.keys())
-                        writer = csv.DictWriter(handle, fieldnames=names)
-                        writer.writeheader()
                     writer.writerow(row)
                     handle.flush()
                 except Exception as exc:
@@ -662,7 +695,7 @@ def main(
     if grid is None:
         grid = _default_grid_for_molecule(molecule_name)
     if csv_filename is None:
-        csv_filename = _default_csv_name(molecule_name, workflow)
+        csv_filename = _default_opt_results_path(molecule_name, workflow)
     return run_scan(
         workflow=workflow,
         molecule=molecule_name,
