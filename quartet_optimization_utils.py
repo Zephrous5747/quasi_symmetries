@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Iterable
 
 import matplotlib.pyplot as plt
@@ -17,7 +19,6 @@ from optimization_abc_utils import (
     RANDOM_SEED,
     build_U_from_thetas,
     mode_is_occupied,
-    orbital_rotation_representation_R,
     pair_list_for_n,
 )
 
@@ -78,10 +79,210 @@ def single_parity_diagonal(basis_bitstrings: Iterable[int], orbital: int, n_spat
 
 
 def quartet_parity_diagonal(basis_bitstrings: Iterable[int], edge: Edge, n_spatial: int) -> np.ndarray:
+    if isinstance(basis_bitstrings, list):
+        return _quartet_parity_diagonal_cached(tuple(int(b) for b in basis_bitstrings), normalize_edge(edge), n_spatial)
     return np.array(
         [quartet_parity_value(int(bitstring), edge, n_spatial) for bitstring in basis_bitstrings],
         dtype=np.float64,
     )
+
+
+@lru_cache(maxsize=512)
+def _quartet_parity_diagonal_cached(
+    basis_bitstrings: tuple[int, ...],
+    edge: Edge,
+    n_spatial: int,
+) -> np.ndarray:
+    return np.array(
+        [quartet_parity_value(int(bitstring), edge, n_spatial) for bitstring in basis_bitstrings],
+        dtype=np.float64,
+    )
+
+
+@lru_cache(maxsize=64)
+def _spin_occupation_data(
+    basis_bitstrings: tuple[int, ...],
+    n_spatial: int,
+) -> tuple[
+    tuple[tuple[int, ...], ...],
+    tuple[tuple[int, ...], ...],
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[int, ...],
+    tuple[int, ...],
+]:
+    n_qubits = 2 * n_spatial
+    alpha_occs: list[tuple[int, ...]] = []
+    beta_occs: list[tuple[int, ...]] = []
+    n_alpha_values: list[int] = []
+    spin_order_signs: list[int] = []
+    alpha_keys: set[tuple[int, ...]] = set()
+    beta_keys: set[tuple[int, ...]] = set()
+
+    for bitstring in basis_bitstrings:
+        alpha = tuple(i for i in range(n_spatial) if mode_is_occupied(int(bitstring), 2 * i, n_qubits))
+        beta = tuple(i for i in range(n_spatial) if mode_is_occupied(int(bitstring), 2 * i + 1, n_qubits))
+        grouped_modes = [2 * i for i in alpha] + [2 * i + 1 for i in beta]
+        inversions = sum(
+            1
+            for i, left in enumerate(grouped_modes)
+            for right in grouped_modes[i + 1 :]
+            if left > right
+        )
+        alpha_occs.append(alpha)
+        beta_occs.append(beta)
+        n_alpha_values.append(len(alpha))
+        spin_order_signs.append(-1 if inversions % 2 else 1)
+        alpha_keys.add(alpha)
+        beta_keys.add(beta)
+
+    sorted_alpha = tuple(sorted(alpha_keys, key=lambda item: (len(item), item)))
+    sorted_beta = tuple(sorted(beta_keys, key=lambda item: (len(item), item)))
+    alpha_index = {occ: index for index, occ in enumerate(sorted_alpha)}
+    beta_index = {occ: index for index, occ in enumerate(sorted_beta)}
+    alpha_positions = tuple(alpha_index[occ] for occ in alpha_occs)
+    beta_positions = tuple(beta_index[occ] for occ in beta_occs)
+    return sorted_alpha, sorted_beta, tuple(n_alpha_values), alpha_positions, beta_positions, tuple(spin_order_signs)
+
+
+def _determinant_transform_matrix(
+    u_spatial: np.ndarray,
+    source_occs: list[tuple[int, ...]],
+    target_occs: list[tuple[int, ...]],
+) -> np.ndarray:
+    if not source_occs or not target_occs:
+        return np.zeros((len(source_occs), len(target_occs)), dtype=np.complex128)
+    if len(source_occs[0]) == 0:
+        return np.ones((len(source_occs), len(target_occs)), dtype=np.complex128)
+    out = np.empty((len(source_occs), len(target_occs)), dtype=np.complex128)
+    for i, source in enumerate(source_occs):
+        source_idx = np.asarray(source, dtype=int)
+        for j, target in enumerate(target_occs):
+            out[i, j] = np.linalg.det(u_spatial[np.ix_(source_idx, np.asarray(target, dtype=int))])
+    return out
+
+
+def rotate_state_to_orbital_frame_fast(
+    v_sub: np.ndarray,
+    basis_bitstrings: list[int],
+    u_spatial: np.ndarray,
+    n_spatial: int,
+) -> np.ndarray:
+    """Express the fixed-N state in a rotated orbital frame via determinant overlaps."""
+    basis_tuple = tuple(int(bitstring) for bitstring in basis_bitstrings)
+    alpha_occs, beta_occs, n_alpha_values, alpha_positions, beta_positions, spin_order_signs = _spin_occupation_data(
+        basis_tuple,
+        n_spatial,
+    )
+    coeffs = np.asarray(v_sub, dtype=np.complex128)
+    rotated = np.zeros_like(coeffs)
+    u_spatial = np.asarray(u_spatial, dtype=np.complex128)
+
+    alpha_by_count = {
+        count: [occ for occ in alpha_occs if len(occ) == count]
+        for count in sorted(set(n_alpha_values))
+    }
+    beta_by_count = {
+        count: [occ for occ in beta_occs if len(occ) == count]
+        for count in sorted({len(occ) for occ in beta_occs})
+    }
+    alpha_lookup = {occ: idx for idx, occ in enumerate(alpha_occs)}
+    beta_lookup = {occ: idx for idx, occ in enumerate(beta_occs)}
+
+    for n_alpha in sorted(set(n_alpha_values)):
+        source_indices = [
+            index
+            for index, count in enumerate(n_alpha_values)
+            if count == n_alpha
+        ]
+        beta_count = len(beta_occs[beta_positions[source_indices[0]]])
+        alpha_block = alpha_by_count[n_alpha]
+        beta_block = beta_by_count[beta_count]
+        alpha_global = [alpha_lookup[occ] for occ in alpha_block]
+        beta_global = [beta_lookup[occ] for occ in beta_block]
+        alpha_local = {global_idx: local_idx for local_idx, global_idx in enumerate(alpha_global)}
+        beta_local = {global_idx: local_idx for local_idx, global_idx in enumerate(beta_global)}
+
+        c_block = np.zeros((len(alpha_block), len(beta_block)), dtype=np.complex128)
+        for index in source_indices:
+            c_block[alpha_local[alpha_positions[index]], beta_local[beta_positions[index]]] = (
+                spin_order_signs[index] * coeffs[index]
+            )
+
+        t_alpha = _determinant_transform_matrix(u_spatial, alpha_block, alpha_block)
+        t_beta = _determinant_transform_matrix(u_spatial, beta_block, beta_block)
+        rotated_block = t_alpha.conj().T @ c_block @ t_beta.conj()
+
+        for index in source_indices:
+            rotated[index] = rotated_block[
+                alpha_local[alpha_positions[index]],
+                beta_local[beta_positions[index]],
+            ] * spin_order_signs[index]
+
+    norm = np.linalg.norm(rotated)
+    if norm == 0:
+        raise ValueError("Cannot evaluate parity expectations for a zero-norm state.")
+    return rotated / norm
+
+
+def orbital_rotation_representation_R_fast(
+    u_spatial: np.ndarray,
+    basis_bitstrings: list[int],
+    n_spatial: int,
+) -> np.ndarray:
+    """Many-body orbital-rotation matrix using determinant overlaps."""
+    basis_tuple = tuple(int(bitstring) for bitstring in basis_bitstrings)
+    alpha_occs, beta_occs, n_alpha_values, alpha_positions, beta_positions, spin_order_signs = _spin_occupation_data(
+        basis_tuple,
+        n_spatial,
+    )
+    dim = len(basis_bitstrings)
+    r_sub = np.zeros((dim, dim), dtype=np.complex128)
+    u_spatial = np.asarray(u_spatial, dtype=np.complex128)
+
+    alpha_by_count = {
+        count: [occ for occ in alpha_occs if len(occ) == count]
+        for count in sorted(set(n_alpha_values))
+    }
+    beta_by_count = {
+        count: [occ for occ in beta_occs if len(occ) == count]
+        for count in sorted({len(occ) for occ in beta_occs})
+    }
+    alpha_lookup = {occ: idx for idx, occ in enumerate(alpha_occs)}
+    beta_lookup = {occ: idx for idx, occ in enumerate(beta_occs)}
+
+    for n_alpha in sorted(set(n_alpha_values)):
+        block_indices = [
+            index
+            for index, count in enumerate(n_alpha_values)
+            if count == n_alpha
+        ]
+        beta_count = len(beta_occs[beta_positions[block_indices[0]]])
+        alpha_block = alpha_by_count[n_alpha]
+        beta_block = beta_by_count[beta_count]
+        alpha_global = [alpha_lookup[occ] for occ in alpha_block]
+        beta_global = [beta_lookup[occ] for occ in beta_block]
+        alpha_local = {global_idx: local_idx for local_idx, global_idx in enumerate(alpha_global)}
+        beta_local = {global_idx: local_idx for local_idx, global_idx in enumerate(beta_global)}
+        t_alpha = _determinant_transform_matrix(u_spatial, alpha_block, alpha_block)
+        t_beta = _determinant_transform_matrix(u_spatial, beta_block, beta_block)
+
+        for source in block_indices:
+            source_alpha = alpha_local[alpha_positions[source]]
+            source_beta = beta_local[beta_positions[source]]
+            source_sign = spin_order_signs[source]
+            for target in block_indices:
+                target_alpha = alpha_local[alpha_positions[target]]
+                target_beta = beta_local[beta_positions[target]]
+                target_sign = spin_order_signs[target]
+                r_sub[source, target] = (
+                    source_sign
+                    * target_sign
+                    * t_alpha[source_alpha, target_alpha]
+                    * t_beta[source_beta, target_beta]
+                )
+
+    return r_sub
 
 
 def rotate_state_to_orbital_frame(
@@ -91,12 +292,7 @@ def rotate_state_to_orbital_frame(
     n_spatial: int,
 ) -> np.ndarray:
     """Express the fixed-N state in the determinant basis of the rotated orbital frame."""
-    r_sub = orbital_rotation_representation_R(u_spatial, basis_bitstrings, n_spatial)
-    rotated = r_sub.conj().T @ np.asarray(v_sub, dtype=np.complex128)
-    norm = np.linalg.norm(rotated)
-    if norm == 0:
-        raise ValueError("Cannot evaluate parity expectations for a zero-norm state.")
-    return rotated / norm
+    return rotate_state_to_orbital_frame_fast(v_sub, basis_bitstrings, u_spatial, n_spatial)
 
 
 def parity_stats_from_diagonal(state: np.ndarray, diagonal: np.ndarray) -> ParityStats:
@@ -168,6 +364,11 @@ def optimize_fixed_edge_quartets(
     n_restarts: int = N_RESTARTS,
     random_seed: int = RANDOM_SEED,
     initial_thetas: np.ndarray | None = None,
+    include_zero_start: bool = False,
+    parallel: bool = True,
+    max_workers: int | None = None,
+    maxfev: int | None = 500,
+    maxiter: int | None = None,
 ) -> dict[str, Any]:
     """Optimize a fixed quartet edge family over the existing Givens rotation angles."""
     edge_list = validate_edges(edges, n_spatial)
@@ -177,19 +378,34 @@ def optimize_fixed_edge_quartets(
     def obj(thetas: np.ndarray) -> float:
         return quartet_cost_from_thetas(thetas, edge_list, v_sub, basis_bitstrings, n_spatial, pairs)
 
-    best: dict[str, Any] | None = None
     starts = max(1, int(n_restarts))
+    x0s: list[np.ndarray] = []
     for restart in range(starts):
-        if restart == 0:
+        if restart == 0 and include_zero_start:
             x0 = np.zeros(len(pairs), dtype=float)
             if initial_thetas is not None:
                 x0[: len(initial_thetas)] = np.asarray(initial_thetas, dtype=float)
         else:
             x0 = ANGLE_INIT_SCALE * rng.standard_normal(len(pairs))
+        x0s.append(x0)
 
+    def run_start(x0: np.ndarray) -> tuple[Any, float]:
         method = "Powell" if OPT_METHOD.upper() == "POWELL" else OPT_METHOD
-        result = minimize(obj, x0=x0, method=method, options={"maxiter": MAXITER, "disp": False})
-        score = float(obj(result.x))
+        options: dict[str, Any] = {"maxiter": MAXITER if maxiter is None else int(maxiter), "disp": False}
+        if maxfev is not None:
+            options["maxfev"] = int(maxfev)
+        result = minimize(obj, x0=x0, method=method, options=options)
+        return result, float(obj(result.x))
+
+    if parallel and len(x0s) > 1:
+        workers = max_workers if max_workers is not None else len(x0s)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(run_start, x0s))
+    else:
+        results = [run_start(x0) for x0 in x0s]
+
+    best: dict[str, Any] | None = None
+    for result, score in results:
         if best is None or score < best["cost"]:
             u_spatial = build_U_from_thetas(n_spatial, result.x, pairs)
             stats = quartet_parity_expectations(v_sub, basis_bitstrings, u_spatial, n_spatial, edge_list)
@@ -280,9 +496,29 @@ def run_matching_greedy_baseline(
     n_spatial: int,
     *,
     final_reoptimize: bool = True,
+    n_restarts: int | None = None,
+    include_zero_start: bool = False,
+    parallel_restarts: bool = True,
+    max_workers: int | None = None,
+    maxfev: int | None = 500,
+    maxiter: int | None = None,
+    initial_thetas: np.ndarray | None = None,
 ) -> dict[str, Any]:
     seed_edges = matching_edges(n_spatial)
-    seed_best = optimize_fixed_edge_quartets(v_sub, basis_bitstrings, n_spatial, seed_edges)
+    restart_count = N_RESTARTS if n_restarts is None else int(n_restarts)
+    seed_best = optimize_fixed_edge_quartets(
+        v_sub,
+        basis_bitstrings,
+        n_spatial,
+        seed_edges,
+        n_restarts=restart_count,
+        include_zero_start=include_zero_start,
+        parallel=parallel_restarts,
+        max_workers=max_workers,
+        maxfev=maxfev,
+        maxiter=maxiter,
+        initial_thetas=initial_thetas,
+    )
     greedy_rows = add_greedy_edges_by_expectation(
         v_sub,
         basis_bitstrings,
@@ -296,7 +532,19 @@ def run_matching_greedy_baseline(
     ]
 
     if final_reoptimize:
-        final_best = optimize_fixed_edge_quartets(v_sub, basis_bitstrings, n_spatial, final_edges)
+        final_best = optimize_fixed_edge_quartets(
+            v_sub,
+            basis_bitstrings,
+            n_spatial,
+            final_edges,
+            n_restarts=restart_count,
+            include_zero_start=include_zero_start,
+            parallel=parallel_restarts,
+            max_workers=max_workers,
+            maxfev=maxfev,
+            maxiter=maxiter,
+            initial_thetas=initial_thetas,
+        )
     else:
         final_stats = quartet_parity_expectations(
             v_sub, basis_bitstrings, seed_best["u_spatial"], n_spatial, final_edges
@@ -325,6 +573,14 @@ def run_fixed_topology_baseline(
     basis_bitstrings: list[int],
     n_spatial: int,
     topology: str,
+    *,
+    n_restarts: int | None = None,
+    include_zero_start: bool = False,
+    parallel_restarts: bool = True,
+    max_workers: int | None = None,
+    maxfev: int | None = 500,
+    maxiter: int | None = None,
+    initial_thetas: np.ndarray | None = None,
 ) -> dict[str, Any]:
     constructors = {
         "ring": ring_edges,
@@ -334,7 +590,20 @@ def run_fixed_topology_baseline(
     if topology not in constructors:
         raise ValueError(f"Unknown quartet topology '{topology}'. Choose from {sorted(constructors)}.")
     edges = constructors[topology](n_spatial)
-    best = optimize_fixed_edge_quartets(v_sub, basis_bitstrings, n_spatial, edges)
+    restart_count = N_RESTARTS if n_restarts is None else int(n_restarts)
+    best = optimize_fixed_edge_quartets(
+        v_sub,
+        basis_bitstrings,
+        n_spatial,
+        edges,
+        n_restarts=restart_count,
+        include_zero_start=include_zero_start,
+        parallel=parallel_restarts,
+        max_workers=max_workers,
+        maxfev=maxfev,
+        maxiter=maxiter,
+        initial_thetas=initial_thetas,
+    )
     return {
         "baseline": topology,
         "final": best,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -20,7 +21,6 @@ from optimization_abc_utils import (
     coupled_energy_test,
     decoupled_energy_test,
     diagonalize_sector_blocks,
-    orbital_rotation_representation_R,
     popcount,
     shannon_block_decomposition,
     solve_cisd_state,
@@ -28,6 +28,7 @@ from optimization_abc_utils import (
 from quartet_optimization_utils import (
     graph_diagnostics,
     iter_topologies,
+    orbital_rotation_representation_R_fast,
     quartet_cost_for_u,
     quartet_parity_diagonal,
     run_fixed_topology_baseline,
@@ -49,7 +50,27 @@ def _split_workflow_kwargs(kwargs: dict[str, Any]) -> tuple[str, dict[str, Any]]
 
 
 def _default_csv_name(molecule: str) -> str:
-    return f"{molecule}_quartet_baseline_summary.csv"
+    return str(Path("tables") / f"{molecule}_quartet_baseline_summary.csv")
+
+
+def _local_abc_csv_name(molecule: str) -> str:
+    return str(Path("tables") / f"{molecule}_quasi_symmetry_local_abc.csv")
+
+
+def _load_local_abc_thetas(
+    molecule: str,
+    x: float,
+    *,
+    csv_filename: str | None = None,
+) -> np.ndarray:
+    csv_path = Path(_local_abc_csv_name(molecule) if csv_filename is None else csv_filename)
+    if not csv_path.is_file():
+        raise FileNotFoundError(f"Local-ABC warm-start table not found: {csv_path}")
+    with open(csv_path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            if abs(float(row["Geometry_Param"]) - float(x)) <= 1e-9:
+                return np.asarray(json.loads(row["Thetas"]), dtype=float)
+    raise ValueError(f"No local-ABC warm-start row for {molecule} x={x} in {csv_path}")
 
 
 def quartet_summary_csv_fieldnames() -> list[str]:
@@ -224,6 +245,17 @@ def _skipped_quartet_diagnostics() -> dict[str, Any]:
     }
 
 
+def _skipped_all_quartet_diagnostics() -> dict[str, Any]:
+    nan = float("nan")
+    return {
+        "Sum_CommSq_Identity": nan,
+        "Sum_CommSq_Optimized": nan,
+        "Sum_Sexp_Identity": nan,
+        "Sum_Sexp_Optimized": nan,
+        **_skipped_quartet_diagnostics(),
+    }
+
+
 def _quartet_diagnostics(
     ref: dict[str, Any],
     edges: list[tuple[int, int]],
@@ -237,7 +269,7 @@ def _quartet_diagnostics(
         h_identity_sparse, psi_identity, basis_bitstrings, edges, n_spatial
     )
 
-    r_opt = orbital_rotation_representation_R(u_optimized, basis_bitstrings, n_spatial)
+    r_opt = orbital_rotation_representation_R_fast(u_optimized, basis_bitstrings, n_spatial)
     psi_optimized = r_opt.conj().T @ psi_identity
     h_optimized_sparse = r_opt.conj().T @ (h_identity_sparse @ r_opt)
     h_optimized_sparse = sp.csc_matrix(0.5 * (h_optimized_sparse + h_optimized_sparse.conj().T))
@@ -295,6 +327,7 @@ def _summary_row_from_result(
     sources: dict[tuple[int, int], str] | None = None,
     elapsed_seconds: float,
     initial_frame_edge_stats: list[tuple[tuple[int, int], str, Any]] | None = None,
+    run_post_diagnostics: bool = True,
 ) -> dict[str, Any]:
     res = best["res"]
     edges = best["edges"]
@@ -320,7 +353,11 @@ def _summary_row_from_result(
         "n_spatial": common["n_spatial"],
         "V_Identity": v_identity,
         "V_Optimized": float(best["cost"]),
-        **_quartet_diagnostics(ref, edges, best["u_spatial"]),
+        **(
+            _quartet_diagnostics(ref, edges, best["u_spatial"])
+            if run_post_diagnostics
+            else _skipped_all_quartet_diagnostics()
+        ),
         "Edge_Count": len(edges),
         "Mean_Abs_Expectation": float(np.mean(np.abs(expectations))) if expectations else float("nan"),
         "Min_Abs_Expectation": float(np.min(np.abs(expectations))) if expectations else float("nan"),
@@ -361,6 +398,16 @@ def evaluate_single_geometry(
     *,
     include_hub: bool = False,
     final_reoptimize_matching: bool = True,
+    n_restarts: int | None = 3,
+    post_diagnostics: str = "all",
+    include_zero_start: bool = False,
+    parallel_baselines: bool = True,
+    parallel_restarts: bool = True,
+    max_workers: int | None = None,
+    optimizer_maxfev: int | None = 500,
+    optimizer_maxiter: int | None = None,
+    local_abc_warm_start: bool = False,
+    local_abc_csv_filename: str | None = None,
     verbose: bool = True,
     **kwargs: Any,
 ) -> list[dict[str, Any]]:
@@ -387,52 +434,129 @@ def evaluate_single_geometry(
     }
     v_sub = ref["v_sub"]
     basis_bitstrings = ref["basis_bitstrings"]
+    initial_thetas = (
+        _load_local_abc_thetas(
+            molecule,
+            x,
+            csv_filename=local_abc_csv_filename,
+        )
+        if local_abc_warm_start
+        else None
+    )
+    if initial_thetas is not None:
+        _trace(
+            f"{molecule} x={x:.6g}: using local-ABC warm-start rotation",
+            verbose=verbose,
+        )
 
     rows: list[dict[str, Any]] = []
-    _trace(f"{molecule} x={x:.6g}: optimizing greedy baseline", verbose=verbose)
-    baseline_start = time.perf_counter()
-    matching_result = run_matching_greedy_baseline(
-        v_sub,
-        basis_bitstrings,
-        n_spatial,
-        final_reoptimize=final_reoptimize_matching,
-    )
-    baseline_elapsed = time.perf_counter() - baseline_start
-    rows.append(
-        _summary_row_from_result(
-            matching_result["final"],
-            common=common,
-            ref=ref,
-            baseline="greedy",
-            sources=matching_result["sources"],
-            elapsed_seconds=baseline_elapsed,
-            initial_frame_edge_stats=matching_result["initial_frame_edge_stats"],
+    baseline_results: list[dict[str, Any]] = []
+
+    def run_greedy() -> dict[str, Any]:
+        _trace(f"{molecule} x={x:.6g}: optimizing greedy baseline", verbose=verbose)
+        baseline_start = time.perf_counter()
+        matching_result = run_matching_greedy_baseline(
+            v_sub,
+            basis_bitstrings,
+            n_spatial,
+            final_reoptimize=final_reoptimize_matching,
+            n_restarts=n_restarts,
+            include_zero_start=include_zero_start,
+            parallel_restarts=parallel_restarts,
+            max_workers=max_workers,
+            maxfev=optimizer_maxfev,
+            maxiter=optimizer_maxiter,
+            initial_thetas=initial_thetas,
         )
-    )
-    _trace(
-        f"{molecule} x={x:.6g}: finished greedy in "
-        f"{baseline_elapsed:.1f}s",
-        verbose=verbose,
-    )
-    for topology in iter_topologies(include_hub=include_hub):
+        baseline_elapsed = time.perf_counter() - baseline_start
+        _trace(
+            f"{molecule} x={x:.6g}: finished greedy in "
+            f"{baseline_elapsed:.1f}s",
+            verbose=verbose,
+        )
+        return {
+            "baseline": "greedy",
+            "result": matching_result["final"],
+            "sources": matching_result["sources"],
+            "elapsed_seconds": baseline_elapsed,
+            "initial_frame_edge_stats": matching_result["initial_frame_edge_stats"],
+        }
+
+    def run_topology(topology: str) -> dict[str, Any]:
         _trace(f"{molecule} x={x:.6g}: optimizing {topology} baseline", verbose=verbose)
         baseline_start = time.perf_counter()
-        topology_result = run_fixed_topology_baseline(v_sub, basis_bitstrings, n_spatial, topology)
-        baseline_elapsed = time.perf_counter() - baseline_start
-        rows.append(
-            _summary_row_from_result(
-                topology_result["final"],
-                common=common,
-                ref=ref,
-                baseline=topology,
-                sources=topology_result["sources"],
-                elapsed_seconds=baseline_elapsed,
-            )
+        topology_result = run_fixed_topology_baseline(
+            v_sub,
+            basis_bitstrings,
+            n_spatial,
+            topology,
+            n_restarts=n_restarts,
+            include_zero_start=include_zero_start,
+            parallel_restarts=parallel_restarts,
+            max_workers=max_workers,
+            maxfev=optimizer_maxfev,
+            maxiter=optimizer_maxiter,
+            initial_thetas=initial_thetas,
         )
+        baseline_elapsed = time.perf_counter() - baseline_start
         _trace(
             f"{molecule} x={x:.6g}: finished {topology} in "
             f"{baseline_elapsed:.1f}s",
             verbose=verbose,
+        )
+        return {
+            "baseline": topology,
+            "result": topology_result["final"],
+            "sources": topology_result["sources"],
+            "elapsed_seconds": baseline_elapsed,
+            "initial_frame_edge_stats": None,
+        }
+
+    baseline_jobs: list[tuple[str, Any]] = [("greedy", run_greedy)]
+    baseline_jobs.extend((topology, lambda topology=topology: run_topology(topology)) for topology in iter_topologies(include_hub=include_hub))
+    if parallel_baselines and len(baseline_jobs) > 1:
+        workers = max_workers if max_workers is not None else len(baseline_jobs)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_index = {
+                executor.submit(job): index
+                for index, (_, job) in enumerate(baseline_jobs)
+            }
+            completed: dict[int, dict[str, Any]] = {}
+            for future in as_completed(future_to_index):
+                completed[future_to_index[future]] = future.result()
+        baseline_results = [completed[index] for index in range(len(baseline_jobs))]
+    else:
+        baseline_results = [job() for _, job in baseline_jobs]
+
+    if post_diagnostics not in {"all", "best", "none"}:
+        raise ValueError("post_diagnostics must be one of 'all', 'best', or 'none'.")
+    best_baseline = min(
+        baseline_results,
+        key=lambda item: float(item["result"]["cost"]),
+    )
+
+    for baseline_row in baseline_results:
+        run_post = (
+            post_diagnostics == "all"
+            or (post_diagnostics == "best" and baseline_row is best_baseline)
+        )
+        if run_post:
+            _trace(
+                f"{molecule} x={x:.6g}: running post diagnostics for "
+                f"{baseline_row['baseline']} baseline",
+                verbose=verbose,
+            )
+        rows.append(
+            _summary_row_from_result(
+                baseline_row["result"],
+                common=common,
+                ref=ref,
+                baseline=baseline_row["baseline"],
+                sources=baseline_row["sources"],
+                elapsed_seconds=baseline_row["elapsed_seconds"],
+                initial_frame_edge_stats=baseline_row["initial_frame_edge_stats"],
+                run_post_diagnostics=run_post,
+            )
         )
 
     _trace(
@@ -450,6 +574,16 @@ def run_scan(
     *,
     include_hub: bool = False,
     final_reoptimize_matching: bool = True,
+    n_restarts: int | None = 3,
+    post_diagnostics: str = "all",
+    include_zero_start: bool = False,
+    parallel_baselines: bool = True,
+    parallel_restarts: bool = True,
+    max_workers: int | None = None,
+    optimizer_maxfev: int | None = 500,
+    optimizer_maxiter: int | None = None,
+    local_abc_warm_start: bool = False,
+    local_abc_csv_filename: str | None = None,
     plot_prefix: str | None = None,
     verbose: bool = True,
     **kwargs: Any,
@@ -477,6 +611,16 @@ def run_scan(
                 x,
                 include_hub=include_hub,
                 final_reoptimize_matching=final_reoptimize_matching,
+                n_restarts=n_restarts,
+                post_diagnostics=post_diagnostics,
+                include_zero_start=include_zero_start,
+                parallel_baselines=parallel_baselines,
+                parallel_restarts=parallel_restarts,
+                max_workers=max_workers,
+                optimizer_maxfev=optimizer_maxfev,
+                optimizer_maxiter=optimizer_maxiter,
+                local_abc_warm_start=local_abc_warm_start,
+                local_abc_csv_filename=local_abc_csv_filename,
                 verbose=verbose,
                 **kwargs,
             )
@@ -507,6 +651,16 @@ def main(
     *,
     include_hub: bool = False,
     final_reoptimize_matching: bool = True,
+    n_restarts: int | None = 3,
+    post_diagnostics: str = "all",
+    include_zero_start: bool = False,
+    parallel_baselines: bool = True,
+    parallel_restarts: bool = True,
+    max_workers: int | None = None,
+    optimizer_maxfev: int | None = 500,
+    optimizer_maxiter: int | None = None,
+    local_abc_warm_start: bool = False,
+    local_abc_csv_filename: str | None = None,
     plot_prefix: str | None = None,
     verbose: bool = True,
     **kwargs: Any,
@@ -520,6 +674,16 @@ def main(
         csv_filename=output_csv,
         include_hub=include_hub,
         final_reoptimize_matching=final_reoptimize_matching,
+        n_restarts=n_restarts,
+        post_diagnostics=post_diagnostics,
+        include_zero_start=include_zero_start,
+        parallel_baselines=parallel_baselines,
+        parallel_restarts=parallel_restarts,
+        max_workers=max_workers,
+        optimizer_maxfev=optimizer_maxfev,
+        optimizer_maxiter=optimizer_maxiter,
+        local_abc_warm_start=local_abc_warm_start,
+        local_abc_csv_filename=local_abc_csv_filename,
         plot_prefix=plot_prefix,
         verbose=verbose,
         **kwargs,
