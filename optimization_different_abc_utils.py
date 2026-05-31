@@ -508,7 +508,7 @@ def sector_weights_from_vec(vec, sectors): #get weights for print out
 def decoupled_min_energy(H, sectors): # min eigval in each sector
     Emin = None
     for idxs in sectors.values():
-        blk = H_dense[np.ix_(idxs, idxs)]
+        blk = H[np.ix_(idxs, idxs)]
         e0 = float(np.linalg.eigvalsh(blk)[0])
         Emin = e0 if Emin is None else min(Emin, e0)
     return float(Emin)

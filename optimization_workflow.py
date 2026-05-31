@@ -21,17 +21,19 @@ from optimization_abc_utils import (
     OP_COEF_TOL,
     OPT_METHOD,
     RANDOM_SEED,
-    analyze_individual_symmetry_operators_with_leakage,
     analyze_individual_symmetry_operators_with_leakage_subspace,
     build_generalized_sectors,
     closed_shell_hf_bitstring,
+    bo_like_coupled_energy_test,
+    coupled_energy_test,
+    decoupled_energy_test,
+    diagonalize_sector_blocks,
+    EnergySectorDiagnostics,
     optimize_variance_restricted,
     orbital_rotation_representation_R,
     pair_list_for_n,
     popcount,
     shannon_block_decomposition,
-    shared_abc_energy_indicators,
-    skipped_energy_sector_diagnostics,
     solve_cisd_state,
     variance_restricted,
 )
@@ -70,6 +72,25 @@ OPT_RESULT_FIELDNAMES = [
     "U_Spatial",
     "Exp_Omega",
     "Local_ABC",
+    "Sum_CommSq_Identity",
+    "Sum_CommSq_Optimized",
+    "Sum_Sexp_Identity",
+    "Sum_Sexp_Optimized",
+    "Coarse_Entropy_Identity",
+    "Coarse_Entropy_Optimized",
+    "Fine_Entropy_Identity",
+    "Fine_Entropy_Optimized",
+    "Edec_Identity",
+    "Edec_Optimized",
+    "Ecoupled_Identity",
+    "Ecoupled_Optimized",
+    "Kcoupled_Identity",
+    "Kcoupled_Optimized",
+    "EBO_Identity",
+    "EBO_Optimized",
+    "NumSectors_Identity",
+    "NumSectors_Optimized",
+    "DenseDiagnosticsSkipped",
     "Log_V",
     "Log_NOmega",
     "Log_Params",
@@ -244,14 +265,6 @@ def _prepare_reference_state(
     )
 
 
-def _compute_spin_rdms_from_ref(ref: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if ref["use_dense"]:
-        return compute_spin_rdms_from_statevector(ref["psi_full"], ref["n_spatial"])
-    return compute_spin_rdms_from_subspace_state(
-        ref["v_sub"], ref["basis_bitstrings"], ref["n_spatial"]
-    )
-
-
 def _run_shared_abc_commutativity(
     ref: dict[str, Any],
     molecule: str,
@@ -264,39 +277,61 @@ def _run_shared_abc_commutativity(
     if not EVAL_STATE_SPECIFIC_COMMUTATIVITY:
         return 0.0, 0.0, {"sum_exp": np.nan}
 
-    if ref["use_dense"]:
-        result = analyze_individual_symmetry_operators_with_leakage(
-            ref["h_full"],
-            ref["psi_full"],
-            u_spatial,
-            ref["n_spatial"],
-            ref["n_qubits"],
-            a,
-            b,
-            c,
-            label=f"{molecule} / {label}",
-            tol=OP_COEF_TOL,
-            check_eigenstate=True,
-        )
-    else:
-        result = analyze_individual_symmetry_operators_with_leakage_subspace(
-            ref["h_sub"],
-            ref["v_sub"],
-            ref["basis_bitstrings"],
-            u_spatial,
-            ref["n_spatial"],
-            ref["n_qubits"],
-            a,
-            b,
-            c,
-            label=f"{molecule} / {label}",
-            tol=OP_COEF_TOL,
-            check_eigenstate=True,
-        )
+    result = analyze_individual_symmetry_operators_with_leakage_subspace(
+        ref["h_sub"],
+        ref["v_sub"],
+        ref["basis_bitstrings"],
+        u_spatial,
+        ref["n_spatial"],
+        ref["n_qubits"],
+        a,
+        b,
+        c,
+        label=f"{molecule} / {label}",
+        tol=OP_COEF_TOL,
+        check_eigenstate=True,
+    )
     return float(result["sum_comm_sq"]), float(np.real(result["sum_exp"])), result
 
 
-def _run_dense_entropy_and_energy(
+def _energy_indicators_from_sectors(
+    h_work: np.ndarray,
+    sectors: dict[Any, list[int]],
+    energy_fci: float,
+    label: str,
+    tol: float = 1e-3,
+) -> EnergySectorDiagnostics:
+    sector_data = diagonalize_sector_blocks(h_work, sectors)
+    e_dec_min, best_sector, best_sector_dim = decoupled_energy_test(h_work, sectors)
+    e_coupled, k_coupled, converged, _ = coupled_energy_test(
+        h_work, sector_data, E_exact=energy_fci, tol=tol
+    )
+    e_bo, _, _ = bo_like_coupled_energy_test(h_work, sector_data)
+
+    print(f"\n=== Energy indicators: {label} ===")
+    print(f"E_exact            = {energy_fci:+.12f}")
+    print(f"E_dec_min          = {e_dec_min:+.12f}")
+    print(f"best sector        = {best_sector}")
+    print(f"best sector dim    = {best_sector_dim}")
+    print(f"E_coupled          = {e_coupled:+.12f}")
+    print(f"K_coupled          = {k_coupled}")
+    print(f"coupled converged  = {converged}")
+    print(f"E_BO               = {e_bo:+.12f}")
+    print(f"n_sectors          = {len(sectors)}")
+
+    return EnergySectorDiagnostics(
+        E_dec_min=e_dec_min,
+        best_sector=best_sector,
+        best_sector_dim=best_sector_dim,
+        E_coupled=e_coupled,
+        K_coupled=k_coupled,
+        coupled_converged=converged,
+        E_BO=e_bo,
+        n_sectors=len(sectors),
+    )
+
+
+def _run_subspace_entropy_and_energy(
     ref: dict[str, Any],
     molecule: str,
     energy_fci: float,
@@ -311,7 +346,7 @@ def _run_dense_entropy_and_energy(
     label_identity: str,
     label_optimized: str,
 ) -> dict[str, Any]:
-    h_identity = ref["h_sub"].toarray().astype(np.complex128)
+    h_sub = ref["h_sub"].toarray().astype(np.complex128)
     psi_identity = ref["v_sub"] / np.linalg.norm(ref["v_sub"])
     n_spatial = ref["n_spatial"]
     n_qubits = ref["n_qubits"]
@@ -321,45 +356,84 @@ def _run_dense_entropy_and_energy(
         basis_bitstrings, n_spatial, n_qubits, a_id, b_id, c_id
     )
     entropy_fine_identity, entropy_coarse_identity, _ = shannon_block_decomposition(
-        h_identity, psi_identity, sectors_identity
+        h_sub, psi_identity, sectors_identity
     )
 
     sectors_optimized = build_generalized_sectors(
         basis_bitstrings, n_spatial, n_qubits, a_opt, b_opt, c_opt
     )
     r_opt = orbital_rotation_representation_R(u_optimized, basis_bitstrings, n_spatial)
-    h_rot = r_opt.conj().T @ (h_identity @ r_opt)
+    h_rot = r_opt.conj().T @ (h_sub @ r_opt)
     h_rot = 0.5 * (h_rot + h_rot.conj().T)
     psi_rot = r_opt.conj().T @ psi_identity
     entropy_fine_optimized, entropy_coarse_optimized, _ = shannon_block_decomposition(
         h_rot, psi_rot, sectors_optimized
     )
 
-    energy_identity = shared_abc_energy_indicators(
-        H_dense=h_identity,
-        basis_bitstrings=basis_bitstrings,
-        n_spatial=n_spatial,
-        n_qubits=n_qubits,
-        a=a_id,
-        b=b_id,
-        c=c_id,
-        U_spatial=u_identity,
-        E_exact=energy_fci,
-        tol=1e-3,
-        label=f"{molecule} / {label_identity}",
+    energy_identity = _energy_indicators_from_sectors(
+        h_sub, sectors_identity, energy_fci, f"{molecule} / {label_identity}"
     )
-    energy_optimized = shared_abc_energy_indicators(
-        H_dense=h_identity,
-        basis_bitstrings=basis_bitstrings,
-        n_spatial=n_spatial,
-        n_qubits=n_qubits,
-        a=a_opt,
-        b=b_opt,
-        c=c_opt,
-        U_spatial=u_optimized,
-        E_exact=energy_fci,
-        tol=1e-3,
-        label=f"{molecule} / {label_optimized}",
+    energy_optimized = _energy_indicators_from_sectors(
+        h_rot, sectors_optimized, energy_fci, f"{molecule} / {label_optimized}"
+    )
+
+    return {
+        "Coarse_Entropy_Identity": entropy_coarse_identity,
+        "Coarse_Entropy_Optimized": entropy_coarse_optimized,
+        "Fine_Entropy_Identity": entropy_fine_identity,
+        "Fine_Entropy_Optimized": entropy_fine_optimized,
+        "Edec_Identity": energy_identity.E_dec_min,
+        "Edec_Optimized": energy_optimized.E_dec_min,
+        "Ecoupled_Identity": energy_identity.E_coupled,
+        "Ecoupled_Optimized": energy_optimized.E_coupled,
+        "Kcoupled_Identity": energy_identity.K_coupled,
+        "Kcoupled_Optimized": energy_optimized.K_coupled,
+        "EBO_Identity": energy_identity.E_BO,
+        "EBO_Optimized": energy_optimized.E_BO,
+        "NumSectors_Identity": energy_identity.n_sectors,
+        "NumSectors_Optimized": energy_optimized.n_sectors,
+        "DenseDiagnosticsSkipped": False,
+    }
+
+
+def _run_local_subspace_entropy_and_energy(
+    ref: dict[str, Any],
+    molecule: str,
+    energy_fci: float,
+    u_identity: np.ndarray,
+    local_abcs_identity: Any,
+    u_optimized: np.ndarray,
+    local_abcs_optimized: Any,
+) -> dict[str, Any]:
+    h_sub = ref["h_sub"].toarray().astype(np.complex128)
+    psi_identity = ref["v_sub"] / np.linalg.norm(ref["v_sub"])
+    n_spatial = ref["n_spatial"]
+    n_qubits = ref["n_qubits"]
+    basis_bitstrings = ref["basis_bitstrings"]
+
+    sectors_identity = local_utils.build_generalized_sectors_local_abc(
+        basis_bitstrings, n_spatial, n_qubits, local_abcs_identity
+    )
+    entropy_fine_identity, entropy_coarse_identity, _ = shannon_block_decomposition(
+        h_sub, psi_identity, sectors_identity
+    )
+
+    sectors_optimized = local_utils.build_generalized_sectors_local_abc(
+        basis_bitstrings, n_spatial, n_qubits, local_abcs_optimized
+    )
+    r_opt = orbital_rotation_representation_R(u_optimized, basis_bitstrings, n_spatial)
+    h_rot = r_opt.conj().T @ (h_sub @ r_opt)
+    h_rot = 0.5 * (h_rot + h_rot.conj().T)
+    psi_rot = r_opt.conj().T @ psi_identity
+    entropy_fine_optimized, entropy_coarse_optimized, _ = shannon_block_decomposition(
+        h_rot, psi_rot, sectors_optimized
+    )
+
+    energy_identity = _energy_indicators_from_sectors(
+        h_sub, sectors_identity, energy_fci, f"{molecule} / local abc identity"
+    )
+    energy_optimized = _energy_indicators_from_sectors(
+        h_rot, sectors_optimized, energy_fci, f"{molecule} / local abc optimized"
     )
 
     return {
@@ -462,7 +536,33 @@ def evaluate_single_point_fixed_abc(
         gamma_a, gamma_b, gamma_ab, x_opt, best["pairs"]
     )
 
-    return _optimization_result_row(
+    sum_comm_identity, sum_sexp_identity, _ = _run_shared_abc_commutativity(
+        ref, molecule, u_identity, a_n, b_n, c_n, "fixed abc identity"
+    )
+    sum_comm_optimized, sum_sexp_optimized, _ = _run_shared_abc_commutativity(
+        ref, molecule, u_optimized, a_n, b_n, c_n, "fixed abc optimized"
+    )
+    dense_fields = (
+        _run_subspace_entropy_and_energy(
+            ref,
+            molecule,
+            energy_fci,
+            a_n,
+            b_n,
+            c_n,
+            u_identity,
+            a_n,
+            b_n,
+            c_n,
+            u_optimized,
+            "fixed abc identity",
+            "fixed abc optimized",
+        )
+        if ref["use_dense"]
+        else _skipped_entropy_energy_fields()
+    )
+
+    row = _optimization_result_row(
         workflow=WORKFLOW_FIXED_ABC,
         molecule=molecule,
         x=x,
@@ -480,6 +580,16 @@ def evaluate_single_point_fixed_abc(
         thetas=np.asarray(best["res"].x, dtype=float),
         operator_angles=np.array([best["phi1"], best["phi2"]], dtype=float),
     )
+    row.update(
+        {
+            "Sum_CommSq_Identity": sum_comm_identity,
+            "Sum_CommSq_Optimized": sum_comm_optimized,
+            "Sum_Sexp_Identity": sum_sexp_identity,
+            "Sum_Sexp_Optimized": sum_sexp_optimized,
+            **dense_fields,
+        }
+    )
+    return row
 
 
 def evaluate_single_point_shared_abc(
@@ -508,7 +618,33 @@ def evaluate_single_point_shared_abc(
         gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
     )
 
-    return _optimization_result_row(
+    sum_comm_identity, sum_sexp_identity, _ = _run_shared_abc_commutativity(
+        ref, molecule, u_identity, a_identity, b_identity, c_identity, "shared abc identity"
+    )
+    sum_comm_optimized, sum_sexp_optimized, _ = _run_shared_abc_commutativity(
+        ref, molecule, u_optimized, a_opt, b_opt, c_opt, "shared abc optimized"
+    )
+    dense_fields = (
+        _run_subspace_entropy_and_energy(
+            ref,
+            molecule,
+            energy_fci,
+            a_identity,
+            b_identity,
+            c_identity,
+            u_identity,
+            a_opt,
+            b_opt,
+            c_opt,
+            u_optimized,
+            "shared abc identity",
+            "shared abc optimized",
+        )
+        if ref["use_dense"]
+        else _skipped_entropy_energy_fields()
+    )
+
+    row = _optimization_result_row(
         workflow=WORKFLOW_SHARED_ABC,
         molecule=molecule,
         x=x,
@@ -526,6 +662,16 @@ def evaluate_single_point_shared_abc(
         thetas=np.asarray(best["res"].x[:n_pairs], dtype=float),
         operator_angles=np.asarray(best["res"].x[n_pairs:], dtype=float),
     )
+    row.update(
+        {
+            "Sum_CommSq_Identity": sum_comm_identity,
+            "Sum_CommSq_Optimized": sum_comm_optimized,
+            "Sum_Sexp_Identity": sum_sexp_identity,
+            "Sum_Sexp_Optimized": sum_sexp_optimized,
+            **dense_fields,
+        }
+    )
+    return row
 
 
 def _run_local_abc_commutativity(
@@ -536,9 +682,9 @@ def _run_local_abc_commutativity(
     if not local_utils.EVAL_STATE_SPECIFIC_COMMUTATIVITY:
         return 0.0, float("nan")
 
-    psi = np.asarray(ref["psi_full"] if ref["use_dense"] else ref["v_sub"], dtype=np.complex128)
+    psi = np.asarray(ref["v_sub"], dtype=np.complex128)
     psi = psi / np.linalg.norm(psi)
-    h_mat = ref["h_full"] if ref["use_dense"] else ref["h_sub"]
+    h_mat = ref["h_sub"]
 
     sum_exp = 0.0 + 0.0j
     sum_comm_sq = 0.0
@@ -548,10 +694,7 @@ def _run_local_abc_commutativity(
             u_spatial, ref["n_spatial"], i, local_abcs, tol=local_utils.OP_COEF_TOL
         )
         si_full = local_utils.fermion_to_sparse_qubit(si_ferm, ref["n_qubits"])
-        if ref["use_dense"]:
-            si_mat = si_full
-        else:
-            si_mat = local_utils.restrict_operator_to_subspace(si_full, ref["basis_bitstrings"])
+        si_mat = local_utils.restrict_operator_to_subspace(si_full, ref["basis_bitstrings"])
 
         sum_exp += np.vdot(psi, si_mat.dot(psi))
         comm_sq_i, _ = local_utils.comm_state_norm_sq(
@@ -579,8 +722,6 @@ def evaluate_single_point_local_abc(
     )
     gamma_a, gamma_b, gamma_ab = ref["gamma_a"], ref["gamma_b"], ref["gamma_ab"]
     n_spatial = ref["n_spatial"]
-    n_qubits = ref["n_qubits"]
-    basis_bitstrings = ref["basis_bitstrings"]
     pairs = local_utils.pair_list_for_n(n_spatial)
     n_pairs = len(pairs)
 
@@ -600,7 +741,27 @@ def evaluate_single_point_local_abc(
         gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
     )
 
-    return _optimization_result_row(
+    sum_comm_identity, sum_sexp_identity = _run_local_abc_commutativity(
+        ref, u_identity, local_abcs_identity
+    )
+    sum_comm_optimized, sum_sexp_optimized = _run_local_abc_commutativity(
+        ref, u_optimized, local_abcs_optimized
+    )
+    dense_fields = (
+        _run_local_subspace_entropy_and_energy(
+            ref,
+            molecule,
+            ref["energy_fci"],
+            u_identity,
+            local_abcs_identity,
+            u_optimized,
+            local_abcs_optimized,
+        )
+        if ref["use_dense"]
+        else _skipped_entropy_energy_fields()
+    )
+
+    row = _optimization_result_row(
         workflow=WORKFLOW_LOCAL_ABC,
         molecule=molecule,
         x=x,
@@ -619,6 +780,16 @@ def evaluate_single_point_local_abc(
         operator_angles=np.asarray(best["res"].x[n_pairs:], dtype=float),
         local_abcs=local_abcs_optimized,
     )
+    row.update(
+        {
+            "Sum_CommSq_Identity": sum_comm_identity,
+            "Sum_CommSq_Optimized": sum_comm_optimized,
+            "Sum_Sexp_Identity": sum_sexp_identity,
+            "Sum_Sexp_Optimized": sum_sexp_optimized,
+            **dense_fields,
+        }
+    )
+    return row
 
 
 def evaluate_single_point(

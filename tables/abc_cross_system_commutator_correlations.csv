@@ -1,0 +1,10 @@
+x_metric,case,pearson_r,n
+k,initial,-0.0973211681627,30
+k,fixed,0.390853557802,30
+k,shared,0.642085478749,30
+edec_error,initial,0.00232625278209,30
+edec_error,fixed,0.727546884086,30
+edec_error,shared,0.459403475727,30
+ebo_error,initial,0.0340316444573,30
+ebo_error,fixed,0.726675068526,30
+ebo_error,shared,-0.0749816216503,30
