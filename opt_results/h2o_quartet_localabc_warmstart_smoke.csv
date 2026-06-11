@@ -1,0 +1,4 @@
+Baseline,Initial_LocalABC_Cost,Optimized_Cost,Elapsed_Seconds,Optimizer_Nfev,Optimizer_Nit,Optimizer_Success,Optimizer_Message
+greedy,0.01602702169896575,0.020109710196123953,39.79682950000279,500,1,False,Maximum number of function evaluations has been exceeded.
+ring,0.0483165098989119,0.04799662341283706,19.505367700010538,500,1,False,Maximum number of function evaluations has been exceeded.
+balanced_tree,0.041599658344413704,0.041323381464607234,19.48580690001836,500,1,False,Maximum number of function evaluations has been exceeded.

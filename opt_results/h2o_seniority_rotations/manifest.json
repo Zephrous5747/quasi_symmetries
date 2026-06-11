@@ -1,0 +1,18 @@
+{
+  "workflow": "fixed_abc",
+  "molecule": "h2o",
+  "csv": "opt_results\\h2o_quasi_symmetry_fixed_abc.csv",
+  "rotation_dir": "opt_results\\h2o_seniority_rotations",
+  "geometries": [
+    0.958,
+    1.1293333333333333,
+    1.3006666666666666,
+    1.472,
+    1.6433333333333333,
+    1.8146666666666667,
+    1.986,
+    2.1573333333333333,
+    2.328666666666667,
+    2.5
+  ]
+}
