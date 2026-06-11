@@ -6,10 +6,10 @@ import unittest
 
 import numpy as np
 
-from n2_action_diagnostics import OrbitalRotationAction
-from optimization_abc_utils import build_U_from_thetas, pair_list_for_n
-from parity_parent_hamiltonians import rotate_h_sub_dense
-from quartet_optimization_utils import orbital_rotation_representation_R_fast
+from quasi_symmetries.diagnostics.n2_action import OrbitalRotationAction
+from quasi_symmetries.optimization import build_U_from_thetas, pair_list_for_n
+from quasi_symmetries.theory.parity_parent import rotate_h_sub_dense
+from quasi_symmetries.optimization.quartet import orbital_rotation_representation_R_fast
 from tests.helpers import load_h4_reference, load_lih_reference, random_unitary
 
 

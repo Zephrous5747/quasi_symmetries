@@ -6,8 +6,8 @@ import unittest
 
 import numpy as np
 
-from optimization_abc_utils import build_U_from_thetas, pair_list_for_n
-from parity_parent_hamiltonians import (
+from quasi_symmetries.optimization import build_U_from_thetas, pair_list_for_n
+from quasi_symmetries.theory.parity_parent import (
     external_singleton_spin_orbitals,
     pair_parity_variance_sum,
     projection_error_frobenius,
@@ -16,7 +16,7 @@ from parity_parent_hamiltonians import (
     relative_projection_error,
     rotate_h_sub_dense,
 )
-from quartet_optimization_utils import rotate_state_to_orbital_frame
+from quasi_symmetries.optimization.quartet import rotate_state_to_orbital_frame
 from tests.helpers import hf_state_vector, load_h4_reference, random_unitary
 
 
@@ -92,7 +92,7 @@ class TestHamiltonianParentMatching(unittest.TestCase):
             self.ref["basis_bitstrings"],
             self.n_spatial,
         )
-        from parity_parent_hamiltonians import max_reflection_commutator_frobenius, pair_parity_diagonal
+        from quasi_symmetries.theory.parity_parent import max_reflection_commutator_frobenius, pair_parity_diagonal
 
         max_comm = 0.0
         for orbital in range(self.n_spatial):
@@ -130,7 +130,7 @@ class TestHamiltonianParentMatching(unittest.TestCase):
         In a fixed determinant basis both vanish on the parent class and are positive
         for the physical Hamiltonian, but they are not numerically identical measures.
         """
-        from parity_parent_hamiltonians import max_reflection_commutator_frobenius, pair_parity_diagonal
+        from quasi_symmetries.theory.parity_parent import max_reflection_commutator_frobenius, pair_parity_diagonal
 
         comm_sum = 0.0
         for orbital in range(self.n_spatial):

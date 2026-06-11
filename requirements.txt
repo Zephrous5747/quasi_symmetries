@@ -1,0 +1,9 @@
+numpy
+scipy
+matplotlib
+openfermion
+h5py
+
+# Optional: Hamiltonian generation and PySCF-dependent tests
+# pyscf
+# openfermionpyscf

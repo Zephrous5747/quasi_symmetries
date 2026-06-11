@@ -7,15 +7,15 @@ import unittest
 import numpy as np
 from scipy.optimize import minimize
 
-from optimization_abc_utils import ANGLE_INIT_SCALE, build_U_from_thetas, pair_list_for_n
-from parity_parent_hamiltonians import (
+from quasi_symmetries.optimization import ANGLE_INIT_SCALE, build_U_from_thetas, pair_list_for_n
+from quasi_symmetries.theory.parity_parent import (
     pair_parity_variance_sum,
     projection_error_frobenius,
     project_h_sub_to_pair_parent,
     relative_projection_error,
     rotate_h_sub_dense,
 )
-from quartet_optimization_utils import rotate_state_to_orbital_frame
+from quasi_symmetries.optimization.quartet import rotate_state_to_orbital_frame
 from tests.helpers import (
     N_RESTARTS,
     OPT_MAXFEV,

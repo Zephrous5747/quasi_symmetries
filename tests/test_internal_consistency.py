@@ -6,8 +6,8 @@ import unittest
 
 import numpy as np
 
-from optimization_abc_utils import build_U_from_thetas, pair_list_for_n
-from quartet_optimization_utils import (
+from quasi_symmetries.optimization import build_U_from_thetas, pair_list_for_n
+from quasi_symmetries.optimization.quartet import (
     parity_stats_from_diagonal,
     rotate_state_to_orbital_frame,
     single_parity_diagonal,

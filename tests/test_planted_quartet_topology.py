@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from parity_parent_hamiltonians import (
+from quasi_symmetries.theory.parity_parent import (
     max_reflection_commutator_frobenius,
     pair_parity_diagonal,
     project_h_sub_to_pair_parent,

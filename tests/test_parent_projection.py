@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from parity_parent_hamiltonians import (
+from quasi_symmetries.theory.parity_parent import (
     casscf_spin_orbital_partition,
     max_reflection_commutator_frobenius,
     pair_parity_diagonal,

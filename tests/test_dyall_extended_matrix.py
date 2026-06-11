@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from parity_parent_hamiltonians import (
+from quasi_symmetries.theory.parity_parent import (
     casscf_spin_orbital_partition,
     external_singleton_spin_orbitals,
     max_reflection_commutator_frobenius,

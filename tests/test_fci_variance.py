@@ -7,19 +7,19 @@ import unittest
 import numpy as np
 from scipy.optimize import minimize
 
-from optimization_abc_utils import (
+from quasi_symmetries.optimization import (
     OP_COEF_TOL,
     analyze_individual_symmetry_operators_with_leakage_subspace,
     build_U_from_thetas,
     pair_list_for_n,
 )
-from parity_parent_hamiltonians import pair_parity_variance_sum
-from quartet_optimization_utils import (
+from quasi_symmetries.theory.parity_parent import pair_parity_variance_sum
+from quasi_symmetries.optimization.quartet import (
     matching_edges,
     optimize_fixed_edge_quartets,
     rotate_state_to_orbital_frame,
 )
-from optimization_abc_utils import ANGLE_INIT_SCALE
+from quasi_symmetries.optimization import ANGLE_INIT_SCALE
 from tests.helpers import (
     LIH_N_RESTARTS,
     LIH_OPT_MAXFEV,
@@ -115,7 +115,7 @@ class _FciVarianceTests:
     def test_fci_quartet_optimization_does_not_increase_cost(self) -> None:
         edges = matching_edges(self.n_spatial)
         u_start = random_unitary(self.n_spatial, seed=self.quartet_seed)
-        from quartet_optimization_utils import quartet_cost_for_u
+        from quasi_symmetries.optimization.quartet import quartet_cost_for_u
 
         initial = quartet_cost_for_u(
             self.psi,

@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 from openfermion import FermionOperator
 
-from parity_parent_hamiltonians import (
+from quasi_symmetries.theory.parity_parent import (
     build_incidence_matrix,
     charge_vector_for_modes,
     incidence_rows_dependent,
@@ -24,7 +24,7 @@ from parity_parent_hamiltonians import (
     spatial_pair_groups,
     term_allowed_parity_polynomial,
 )
-from quartet_optimization_utils import (
+from quasi_symmetries.optimization.quartet import (
     matching_edges,
     optimize_fixed_edge_quartets,
     quartet_cost_for_u,
@@ -72,7 +72,7 @@ class TestParityPolynomialOverlapping(unittest.TestCase):
             self.assertTrue(np.array_equal(row, expected))
 
     def test_polynomial_parent_commutes_with_quartet_products(self) -> None:
-        from parity_parent_hamiltonians import max_reflection_commutator_frobenius
+        from quasi_symmetries.theory.parity_parent import max_reflection_commutator_frobenius
 
         edges = [(0, 1), (2, 3)]
         h_parent = project_h_sub_to_polynomial_parent(
@@ -81,7 +81,7 @@ class TestParityPolynomialOverlapping(unittest.TestCase):
             self.ref["n_spatial"],
             edges,
         )
-        from parity_parent_hamiltonians import pair_parity_diagonal
+        from quasi_symmetries.theory.parity_parent import pair_parity_diagonal
 
         for p, q in edges:
             d_p = pair_parity_diagonal(p, self.ref["basis_bitstrings"], self.ref["n_spatial"])

@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from quartet_optimization_utils import (
+from quasi_symmetries.optimization.quartet import (
     balanced_tree_plus_edges,
     hub_edges,
     matching_edges,
@@ -102,7 +102,7 @@ class TestQuartetTopologiesH4(_QuartetTopologyTests, unittest.TestCase):
         self.assertLess(float(result["final"]["cost"]), VAR_TOL)
 
     def test_ring_and_matching_both_zero_at_identity_for_hf(self) -> None:
-        from quartet_optimization_utils import quartet_cost_for_u
+        from quasi_symmetries.optimization.quartet import quartet_cost_for_u
 
         u = np.eye(self.n_spatial, dtype=np.complex128)
         for edges in (
@@ -126,7 +126,7 @@ class TestQuartetTopologiesLiHFci(_QuartetTopologyTests, unittest.TestCase):
     state = "fci"
 
     def test_hub_topology_does_not_increase_cost(self) -> None:
-        from quartet_optimization_utils import quartet_cost_for_u
+        from quasi_symmetries.optimization.quartet import quartet_cost_for_u
 
         edges = hub_edges(self.n_spatial)
         u_start = np.eye(self.n_spatial, dtype=np.complex128)

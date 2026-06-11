@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from parity_parent_hamiltonians import (
+from quasi_symmetries.theory.parity_parent import (
     build_h_sub_from_fermion,
     external_singleton_spin_orbitals,
     project_fermion_to_parent,

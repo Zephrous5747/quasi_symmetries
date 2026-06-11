@@ -7,9 +7,9 @@ from pathlib import Path
 
 import numpy as np
 
-from hamiltonian_cache import DEFAULT_CACHE_DIR, load_reference_state
-from hamiltonian_geometry import get_geometry_and_description
-from optimization_abc_utils import closed_shell_hf_bitstring, popcount, solve_cisd_state
+from quasi_symmetries.hamiltonian.cache import DEFAULT_CACHE_DIR, load_reference_state
+from quasi_symmetries.hamiltonian.geometry import get_geometry_and_description
+from quasi_symmetries.optimization import closed_shell_hf_bitstring, popcount, solve_cisd_state
 
 
 H4_MOLECULE = "h4_linear"
@@ -74,7 +74,7 @@ def load_small_reference(
         )
     except FileNotFoundError:
         try:
-            from hamiltonian_generation import build_reference_state_with_pyscf
+            from quasi_symmetries.hamiltonian.generation import build_reference_state_with_pyscf
         except ImportError as exc:
             raise FileNotFoundError(
                 f"No cache for {molecule} x={x} and PySCF stack unavailable ({exc})."
@@ -104,7 +104,7 @@ def molecular_fermion_hamiltonian(molecule: str, x: float, **geometry_kwargs) ->
     try:
         from openfermion import MolecularData, get_fermion_operator
         from openfermionpyscf import run_pyscf
-        from optimization_abc_utils import BASIS, CHARGE, MULTIPLICITY
+        from quasi_symmetries.optimization import BASIS, CHARGE, MULTIPLICITY
     except ImportError as exc:
         raise unittest.SkipTest(f"PySCF stack unavailable: {exc}") from exc
 
@@ -152,7 +152,7 @@ def quartet_sectors_from_edges(
     edges: list[tuple[int, int]],
     n_spatial: int,
 ) -> dict[tuple[int, ...], list[int]]:
-    from quartet_optimization_utils import quartet_parity_diagonal
+    from quasi_symmetries.optimization.quartet import quartet_parity_diagonal
 
     sectors: dict[tuple[int, ...], list[int]] = {}
     for index, bitstring in enumerate(basis_bitstrings):
@@ -173,7 +173,7 @@ def k_coupled_for_edges(
     *,
     tol: float = 1e-3,
 ) -> dict[str, float | int | bool]:
-    from optimization_abc_utils import coupled_energy_test, diagonalize_sector_blocks
+    from quasi_symmetries.optimization import coupled_energy_test, diagonalize_sector_blocks
 
     sectors = quartet_sectors_from_edges(basis_bitstrings, edges, n_spatial)
     sector_data = diagonalize_sector_blocks(h_dense, sectors)
@@ -203,7 +203,7 @@ def k_coupled_for_seniority(
     *,
     tol: float = 1e-3,
 ) -> dict[str, float | int | bool]:
-    from optimization_abc_utils import build_generalized_sectors, coupled_energy_test, diagonalize_sector_blocks
+    from quasi_symmetries.optimization import build_generalized_sectors, coupled_energy_test, diagonalize_sector_blocks
 
     sectors = build_generalized_sectors(basis_bitstrings, n_spatial, n_qubits, a, b, c)
     sector_data = diagonalize_sector_blocks(h_dense, sectors)
@@ -228,7 +228,7 @@ def rotate_h_and_state(
     basis_bitstrings: list[int],
     n_spatial: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    from quartet_optimization_utils import orbital_rotation_representation_R_fast
+    from quasi_symmetries.optimization.quartet import orbital_rotation_representation_R_fast
 
     rotation = orbital_rotation_representation_R_fast(u_spatial, basis_bitstrings, n_spatial)
     psi_rot = rotation.conj().T @ psi
@@ -253,7 +253,7 @@ OPTIMIZATION_PROTOCOL_NAMES: tuple[str, ...] = PARENT_PROTOCOL_NAMES
 
 def quartet_topology_builders() -> dict[str, object]:
     """Return quartet edge constructors keyed by topology name."""
-    from quartet_optimization_utils import (
+    from quasi_symmetries.optimization.quartet import (
         balanced_tree_plus_edges,
         hub_edges,
         matching_edges,
@@ -298,7 +298,7 @@ def build_parent_hamiltonian(ref: dict, parent_protocol: str) -> dict:
     Quartet protocols: project onto operators commuting with hat R_p hat R_q on topology edges.
     Seniority protocol: DOCI pair-parity parent (commutes with every R^pair_p).
     """
-    from parity_parent_hamiltonians import (
+    from quasi_symmetries.theory.parity_parent import (
         parent_ground_state,
         project_h_sub_to_pair_parent,
         project_h_sub_to_polynomial_parent,
@@ -349,7 +349,7 @@ def build_parent_hamiltonian(ref: dict, parent_protocol: str) -> dict:
 
 def seniority_optimization_params(n_spatial: int) -> tuple[np.ndarray, list[tuple[int, int]]]:
     """Standard ABC x0 and Givens pairs for seniority variance optimization."""
-    from optimization_abc_utils import pair_list_for_n
+    from quasi_symmetries.optimization import pair_list_for_n
 
     pairs = pair_list_for_n(n_spatial)
     m = len(pairs)
@@ -369,10 +369,10 @@ def optimize_seniority_protocol(
     maxfev: int = OPT_MAXFEV,
     maxiter: int = OPT_MAXITER,
 ) -> dict[str, float | np.ndarray]:
-    from quartet_optimization_utils import rotate_state_to_orbital_frame
+    from quasi_symmetries.optimization.quartet import rotate_state_to_orbital_frame
     from scipy.optimize import minimize
 
-    from optimization_abc_utils import (
+    from quasi_symmetries.optimization import (
         ANGLE_INIT_SCALE,
         build_U_from_thetas,
         compute_spin_rdms_from_subspace_state,
@@ -493,7 +493,7 @@ def optimize_quartet_protocol(
     maxfev: int = OPT_MAXFEV,
     maxiter: int = OPT_MAXITER,
 ) -> dict[str, float | np.ndarray]:
-    from quartet_optimization_utils import optimize_fixed_edge_quartets
+    from quasi_symmetries.optimization.quartet import optimize_fixed_edge_quartets
 
     best = optimize_fixed_edge_quartets(
         psi,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from parity_parent_hamiltonians import (
+from quasi_symmetries.theory.parity_parent import (
     external_singleton_spin_orbitals,
     max_reflection_commutator_frobenius,
     projection_error_frobenius,
@@ -48,7 +48,7 @@ class TestDyallExtended(unittest.TestCase):
 
     def test_extended_allows_more_two_body_than_dyall(self) -> None:
         h_fermion, _, n_spin = self._require_fermion()
-        from parity_parent_hamiltonians import singleton_groups, term_allowed
+        from quasi_symmetries.theory.parity_parent import singleton_groups, term_allowed
 
         groups = singleton_groups(self.external)
         dyall_count = 0
@@ -70,7 +70,7 @@ class TestDyallExtended(unittest.TestCase):
 
     def test_fermion_dyall_projection_error_le_extended(self) -> None:
         h_fermion, _, _ = self._require_fermion()
-        from parity_parent_hamiltonians import (
+        from quasi_symmetries.theory.parity_parent import (
             build_h_sub_from_fermion,
             project_fermion_to_parent,
             singleton_groups,
@@ -102,7 +102,7 @@ class TestDyallExtended(unittest.TestCase):
 
     def test_dyall_and_extended_commute_with_external_singletons(self) -> None:
         h_fermion, _, _ = self._require_fermion()
-        from parity_parent_hamiltonians import build_h_sub_from_fermion
+        from quasi_symmetries.theory.parity_parent import build_h_sub_from_fermion
 
         for projector, label in (
             (project_fermion_to_dyall, "dyall"),

@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 from scipy.optimize import minimize
 
-from optimization_abc_utils import (
+from quasi_symmetries.optimization import (
     ANGLE_INIT_SCALE,
     build_U_from_thetas,
     compute_spin_rdms_from_subspace_state,
@@ -15,7 +15,7 @@ from optimization_abc_utils import (
     pair_list_for_n,
     variance_restricted,
 )
-from quartet_optimization_utils import (
+from quasi_symmetries.optimization.quartet import (
     matching_edges,
     optimize_fixed_edge_quartets,
     quartet_cost_for_u,

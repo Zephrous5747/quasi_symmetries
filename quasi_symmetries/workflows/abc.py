@@ -1,0 +1,1118 @@
+"""Unified optimization workflows for quasi-symmetry experiments."""
+
+import csv
+import json
+from pathlib import Path
+from typing import Any, Iterable
+import math
+
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.optimize import minimize
+
+from quasi_symmetries.config import CACHE_DIR as DEFAULT_CACHE_DIR
+from quasi_symmetries.config import OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.hamiltonian.cache import load_reference_state
+from quasi_symmetries.optimization import abc as local_utils
+from quasi_symmetries.hamiltonian.geometry import default_grid_for_molecule as _default_grid_for_molecule
+from quasi_symmetries.optimization import (
+    ANGLE_INIT_SCALE,
+    EVAL_STATE_SPECIFIC_COMMUTATIVITY,
+    MAXITER,
+    N_RESTARTS,
+    OP_COEF_TOL,
+    OPT_METHOD,
+    RANDOM_SEED,
+    analyze_individual_symmetry_operators_with_leakage_subspace,
+    build_generalized_sectors,
+    build_sectors_with_exact_symmetries,
+    closed_shell_hf_bitstring,
+    bo_like_coupled_energy_test,
+    coupled_energy_test,
+    decoupled_energy_test,
+    diagonalize_sector_blocks,
+    EnergySectorDiagnostics,
+    energy_sector_diagnostics_symmetry_restricted,
+    optimize_variance_restricted,
+    orbital_rotation_representation_R,
+    pair_list_for_n,
+    popcount,
+    shannon_block_decomposition,
+    solve_cisd_state,
+    variance_restricted,
+)
+from quasi_symmetries.optimization.rotations import symmetry_blocked_pair_list
+from quasi_symmetries.symmetry.exact import exact_symmetry_data_for_reference, verify_exact_symmetries
+from quasi_symmetries.symmetry.labels import load_symmetry_labels
+
+
+WORKFLOW_FIXED_ABC = "fixed_abc"
+WORKFLOW_SHARED_ABC = "shared_abc"
+WORKFLOW_LOCAL_ABC = "local_abc"
+VALID_WORKFLOWS = {WORKFLOW_FIXED_ABC, WORKFLOW_SHARED_ABC, WORKFLOW_LOCAL_ABC}
+# moved to config
+OPT_RESULT_FIELDNAMES = [
+    "Workflow",
+    "Molecule",
+    "Geometry_Param",
+    "E_HF",
+    "E_FCI",
+    "E_CISD",
+    "n_spatial",
+    "n_electrons",
+    "Optimization_Kind",
+    "Optimizer_Method",
+    "Optimizer_Success",
+    "Optimizer_Status",
+    "Optimizer_Message",
+    "Optimizer_Nit",
+    "Optimizer_Nfev",
+    "V_Identity",
+    "V_Optimized",
+    "a",
+    "b",
+    "c",
+    "Pairs",
+    "Params",
+    "Thetas",
+    "Operator_Angles",
+    "U_Spatial",
+    "Exp_Omega",
+    "Local_ABC",
+    "Sum_CommSq_Identity",
+    "Sum_CommSq_Optimized",
+    "Sum_Sexp_Identity",
+    "Sum_Sexp_Optimized",
+    "Coarse_Entropy_Identity",
+    "Coarse_Entropy_Optimized",
+    "Fine_Entropy_Identity",
+    "Fine_Entropy_Optimized",
+    "Edec_Identity",
+    "Edec_Optimized",
+    "Ecoupled_Identity",
+    "Ecoupled_Optimized",
+    "Kcoupled_Identity",
+    "Kcoupled_Optimized",
+    "EBO_Identity",
+    "EBO_Optimized",
+    "NumSectors_Identity",
+    "NumSectors_Optimized",
+    "DenseDiagnosticsSkipped",
+    "Log_V",
+    "Log_NOmega",
+    "Log_Params",
+]
+
+# Representative N2 bond lengths (Å): equilibrium, stretched (strong correlation), dissociative.
+N2_BOND_EQUILIBRIUM = 1.2
+N2_BOND_STRONGLY_CORRELATED = 1.4
+N2_BOND_DISSOCIATIVE = 2.2
+N2_REPRESENTATIVE_GRID = (
+    N2_BOND_EQUILIBRIUM,
+    N2_BOND_STRONGLY_CORRELATED,
+    N2_BOND_DISSOCIATIVE,
+)
+
+
+def _aufbau_spin_occupation(n_spatial: int, n_up: int, n_down: int) -> np.ndarray:
+    occ = np.zeros(2 * n_spatial, dtype=int)
+    occ[0 : 2 * n_up : 2] = 1
+    occ[1 : 2 * n_down : 2] = 1
+    return occ
+
+
+def _split_workflow_kwargs(kwargs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Extract cache directory and geometry-only kwargs from workflow kwargs."""
+    cache_dir = str(kwargs.pop("hamiltonian_cache_dir", DEFAULT_CACHE_DIR))
+    geom_kw = {k: kwargs[k] for k in ("hoh_angle_deg", "aspect_ratio") if k in kwargs}
+    return cache_dir, geom_kw
+
+
+def _use_exact_symmetries_default(molecule: str, kwargs: dict[str, Any]) -> bool:
+    if "use_exact_symmetries" in kwargs:
+        return bool(kwargs.pop("use_exact_symmetries"))
+    return molecule.lower() in {"h2o", "n2"}
+
+
+def _rotation_pairs_for_ref(ref: dict[str, Any], use_exact_symmetries: bool) -> list[tuple[int, int]]:
+    n_spatial = int(ref["n_spatial"])
+    if use_exact_symmetries:
+        labels = load_symmetry_labels(ref)
+        if labels is not None:
+            pairs = symmetry_blocked_pair_list(n_spatial, labels.irrep_labels)
+            return pairs
+    return pair_list_for_n(n_spatial)
+
+
+def _exact_symmetry_fields(ref: dict[str, Any], molecule: str) -> dict[str, Any]:
+    payload = exact_symmetry_data_for_reference(ref, molecule=molecule)
+    if payload is None:
+        return {}
+    _labels, parities = payload
+    if ref.get("h_sub") is None:
+        return {"Exact_Symmetry_Available": True, "NumExactSymmetries": len(parities)}
+    commutators = verify_exact_symmetries(ref["h_sub"], parities)
+    return {
+        "Exact_Symmetry_Available": True,
+        "NumExactSymmetries": len(parities),
+        "Exact_Symmetry_Comm_Fro": float(sum(commutators.values())),
+    }
+
+
+def _default_csv_name(molecule: str, workflow: str) -> str:
+    suffix = {
+        WORKFLOW_FIXED_ABC: "fixed_abc",
+        WORKFLOW_SHARED_ABC: "shared_abc",
+        WORKFLOW_LOCAL_ABC: "local_abc",
+    }[workflow]
+    return f"{molecule}_quasi_symmetry_{suffix}.csv"
+
+
+def _default_opt_results_path(molecule: str, workflow: str) -> str:
+    return str(OPT_RESULTS_DIR / _default_csv_name(molecule, workflow))
+
+
+def _to_jsonable(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, tuple):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _to_jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _json_data(value: Any) -> str:
+    if value is None:
+        return ""
+    return json.dumps(_to_jsonable(value))
+
+
+def _opt_log_field(best: dict[str, Any], field: str) -> str:
+    log = best.get("log")
+    if log is None:
+        return ""
+    return _json_data(getattr(log, field, None))
+
+
+def _optimizer_metadata(res: Any) -> dict[str, Any]:
+    return {
+        "Optimizer_Method": OPT_METHOD,
+        "Optimizer_Success": bool(getattr(res, "success", False)),
+        "Optimizer_Status": getattr(res, "status", ""),
+        "Optimizer_Message": str(getattr(res, "message", "")),
+        "Optimizer_Nit": getattr(res, "nit", ""),
+        "Optimizer_Nfev": getattr(res, "nfev", ""),
+    }
+
+
+def _optimization_result_row(
+    *,
+    workflow: str,
+    molecule: str,
+    x: float,
+    ref: dict[str, Any],
+    optimization_kind: str,
+    best: dict[str, Any],
+    v_identity: float,
+    v_optimized: float,
+    u_optimized: np.ndarray,
+    exp_omega: np.ndarray,
+    a: float,
+    b: float,
+    c: float,
+    params: np.ndarray,
+    thetas: np.ndarray,
+    operator_angles: np.ndarray,
+    local_abcs: Any = None,
+) -> dict[str, Any]:
+    return {
+        "Workflow": workflow,
+        "Molecule": molecule,
+        "Geometry_Param": x,
+        "E_HF": ref["energy_hf"],
+        "E_FCI": ref["energy_fci"],
+        "E_CISD": ref["energy_cisd"],
+        "n_spatial": ref["n_spatial"],
+        "n_electrons": ref["n_electrons"],
+        "Optimization_Kind": optimization_kind,
+        **_optimizer_metadata(best["res"]),
+        "V_Identity": v_identity,
+        "V_Optimized": v_optimized,
+        "a": a,
+        "b": b,
+        "c": c,
+        "Pairs": _json_data(best["pairs"]),
+        "Params": _json_data(params),
+        "Thetas": _json_data(thetas),
+        "Operator_Angles": _json_data(operator_angles),
+        "U_Spatial": _json_data(u_optimized),
+        "Exp_Omega": _json_data(exp_omega),
+        "Local_ABC": _json_data(local_abcs),
+        "Log_V": _opt_log_field(best, "V"),
+        "Log_NOmega": _opt_log_field(best, "nOmega"),
+        "Log_Params": _opt_log_field(best, "x"),
+    }
+
+
+def _skipped_entropy_energy_fields() -> dict[str, Any]:
+    """CSV fields when dense entropy / sector-energy diagnostics are skipped."""
+    nan = float("nan")
+    return {
+        "Coarse_Entropy_Identity": nan,
+        "Coarse_Entropy_Optimized": nan,
+        "Fine_Entropy_Identity": nan,
+        "Fine_Entropy_Optimized": nan,
+        "Edec_Identity": nan,
+        "Edec_Optimized": nan,
+        "Ecoupled_Identity": nan,
+        "Ecoupled_Optimized": nan,
+        "Kcoupled_Identity": 0,
+        "Kcoupled_Optimized": 0,
+        "EBO_Identity": nan,
+        "EBO_Optimized": nan,
+        "NumSectors_Identity": 0,
+        "NumSectors_Optimized": 0,
+        "DenseDiagnosticsSkipped": True,
+    }
+
+
+def _prepare_reference_state(
+    molecule: str,
+    x: float,
+    *,
+    cache_dir: str,
+    popcount_fn=popcount,
+    solve_cisd_fn=solve_cisd_state,
+    hf_bitstring_fn=closed_shell_hf_bitstring,
+    **geometry_kwargs: Any,
+) -> dict[str, Any]:
+    """Load precomputed fixed-N Hamiltonian / FCI / CISD reference from HDF5 cache."""
+    return load_reference_state(
+        molecule,
+        x,
+        cache_dir=cache_dir,
+        popcount_fn=popcount_fn,
+        solve_cisd_fn=solve_cisd_fn,
+        hf_bitstring_fn=hf_bitstring_fn,
+        **geometry_kwargs,
+    )
+
+
+def _run_shared_abc_commutativity(
+    ref: dict[str, Any],
+    molecule: str,
+    u_spatial: np.ndarray,
+    a: float,
+    b: float,
+    c: float,
+    label: str,
+) -> tuple[float, float, dict[str, Any]]:
+    if not EVAL_STATE_SPECIFIC_COMMUTATIVITY:
+        return 0.0, 0.0, {"sum_exp": np.nan}
+
+    result = analyze_individual_symmetry_operators_with_leakage_subspace(
+        ref["h_sub"],
+        ref["v_sub"],
+        ref["basis_bitstrings"],
+        u_spatial,
+        ref["n_spatial"],
+        ref["n_qubits"],
+        a,
+        b,
+        c,
+        label=f"{molecule} / {label}",
+        tol=OP_COEF_TOL,
+        check_eigenstate=True,
+    )
+    return float(result["sum_comm_sq"]), float(np.real(result["sum_exp"])), result
+
+
+def _energy_indicators_from_sectors(
+    h_work: np.ndarray,
+    sectors: dict[Any, list[int]],
+    energy_fci: float,
+    label: str,
+    tol: float = 1e-3,
+) -> EnergySectorDiagnostics:
+    sector_data = diagonalize_sector_blocks(h_work, sectors)
+    e_dec_min, best_sector, best_sector_dim = decoupled_energy_test(h_work, sectors)
+    e_coupled, k_coupled, converged, _ = coupled_energy_test(
+        h_work, sector_data, E_exact=energy_fci, tol=tol
+    )
+    e_bo, _, _ = bo_like_coupled_energy_test(h_work, sector_data)
+
+    print(f"\n=== Energy indicators: {label} ===")
+    print(f"E_exact            = {energy_fci:+.12f}")
+    print(f"E_dec_min          = {e_dec_min:+.12f}")
+    print(f"best sector        = {best_sector}")
+    print(f"best sector dim    = {best_sector_dim}")
+    print(f"E_coupled          = {e_coupled:+.12f}")
+    print(f"K_coupled          = {k_coupled}")
+    print(f"coupled converged  = {converged}")
+    print(f"E_BO               = {e_bo:+.12f}")
+    print(f"n_sectors          = {len(sectors)}")
+
+    return EnergySectorDiagnostics(
+        E_dec_min=e_dec_min,
+        best_sector=best_sector,
+        best_sector_dim=best_sector_dim,
+        E_coupled=e_coupled,
+        K_coupled=k_coupled,
+        coupled_converged=converged,
+        E_BO=e_bo,
+        n_sectors=len(sectors),
+    )
+
+
+def _run_subspace_entropy_and_energy(
+    ref: dict[str, Any],
+    molecule: str,
+    energy_fci: float,
+    a_id: float,
+    b_id: float,
+    c_id: float,
+    u_identity: np.ndarray,
+    a_opt: float,
+    b_opt: float,
+    c_opt: float,
+    u_optimized: np.ndarray,
+    label_identity: str,
+    label_optimized: str,
+    *,
+    use_exact_symmetries: bool = False,
+) -> dict[str, Any]:
+    h_sub = ref["h_sub"].toarray().astype(np.complex128)
+    psi_identity = ref["v_sub"] / np.linalg.norm(ref["v_sub"])
+    n_spatial = ref["n_spatial"]
+    n_qubits = ref["n_qubits"]
+    basis_bitstrings = ref["basis_bitstrings"]
+
+    exact_payload = (
+        exact_symmetry_data_for_reference(ref, molecule=molecule)
+        if use_exact_symmetries
+        else None
+    )
+    exact_parities = exact_payload[1] if exact_payload is not None else None
+
+    if exact_parities:
+        sectors_identity, _ = build_sectors_with_exact_symmetries(
+            basis_bitstrings, n_spatial, n_qubits, a_id, b_id, c_id, exact_parities
+        )
+    else:
+        sectors_identity = build_generalized_sectors(
+            basis_bitstrings, n_spatial, n_qubits, a_id, b_id, c_id
+        )
+    entropy_fine_identity, entropy_coarse_identity, _ = shannon_block_decomposition(
+        h_sub, psi_identity, sectors_identity
+    )
+
+    if exact_parities:
+        sectors_optimized, _ = build_sectors_with_exact_symmetries(
+            basis_bitstrings, n_spatial, n_qubits, a_opt, b_opt, c_opt, exact_parities
+        )
+    else:
+        sectors_optimized = build_generalized_sectors(
+            basis_bitstrings, n_spatial, n_qubits, a_opt, b_opt, c_opt
+        )
+    r_opt = orbital_rotation_representation_R(u_optimized, basis_bitstrings, n_spatial)
+    h_rot = r_opt.conj().T @ (h_sub @ r_opt)
+    h_rot = 0.5 * (h_rot + h_rot.conj().T)
+    psi_rot = r_opt.conj().T @ psi_identity
+    entropy_fine_optimized, entropy_coarse_optimized, _ = shannon_block_decomposition(
+        h_rot, psi_rot, sectors_optimized
+    )
+
+    energy_identity = _energy_indicators_from_sectors(
+        h_sub, sectors_identity, energy_fci, f"{molecule} / {label_identity}"
+    )
+    energy_optimized = _energy_indicators_from_sectors(
+        h_rot, sectors_optimized, energy_fci, f"{molecule} / {label_optimized}"
+    )
+
+    symmetry_meta: dict[str, Any] = {}
+    if exact_parities:
+        sym_id, sym_id_meta = energy_sector_diagnostics_symmetry_restricted(
+            h_sub,
+            basis_bitstrings,
+            n_spatial,
+            n_qubits,
+            a_id,
+            b_id,
+            c_id,
+            exact_parities,
+            energy_fci=energy_fci,
+            label=f"{molecule} / {label_identity} / exact",
+        )
+        sym_opt, sym_opt_meta = energy_sector_diagnostics_symmetry_restricted(
+            h_rot,
+            basis_bitstrings,
+            n_spatial,
+            n_qubits,
+            a_opt,
+            b_opt,
+            c_opt,
+            exact_parities,
+            energy_fci=energy_fci,
+            label=f"{molecule} / {label_optimized} / exact",
+        )
+        symmetry_meta = {
+            "Symmetry_Allowed_Dim": sym_id_meta["allowed_dim"],
+            "Edec_Symmetry_Identity": sym_id.E_dec_min,
+            "Edec_Symmetry_Optimized": sym_opt.E_dec_min,
+            "NumSectors_Symmetry_Identity": sym_id.n_sectors,
+            "NumSectors_Symmetry_Optimized": sym_opt.n_sectors,
+        }
+
+    return {
+        "Coarse_Entropy_Identity": entropy_coarse_identity,
+        "Coarse_Entropy_Optimized": entropy_coarse_optimized,
+        "Fine_Entropy_Identity": entropy_fine_identity,
+        "Fine_Entropy_Optimized": entropy_fine_optimized,
+        "Edec_Identity": energy_identity.E_dec_min,
+        "Edec_Optimized": energy_optimized.E_dec_min,
+        "Ecoupled_Identity": energy_identity.E_coupled,
+        "Ecoupled_Optimized": energy_optimized.E_coupled,
+        "Kcoupled_Identity": energy_identity.K_coupled,
+        "Kcoupled_Optimized": energy_optimized.K_coupled,
+        "EBO_Identity": energy_identity.E_BO,
+        "EBO_Optimized": energy_optimized.E_BO,
+        "NumSectors_Identity": energy_identity.n_sectors,
+        "NumSectors_Optimized": energy_optimized.n_sectors,
+        "DenseDiagnosticsSkipped": False,
+        **symmetry_meta,
+    }
+
+
+def _run_local_subspace_entropy_and_energy(
+    ref: dict[str, Any],
+    molecule: str,
+    energy_fci: float,
+    u_identity: np.ndarray,
+    local_abcs_identity: Any,
+    u_optimized: np.ndarray,
+    local_abcs_optimized: Any,
+) -> dict[str, Any]:
+    h_sub = ref["h_sub"].toarray().astype(np.complex128)
+    psi_identity = ref["v_sub"] / np.linalg.norm(ref["v_sub"])
+    n_spatial = ref["n_spatial"]
+    n_qubits = ref["n_qubits"]
+    basis_bitstrings = ref["basis_bitstrings"]
+
+    sectors_identity = local_utils.build_generalized_sectors_local_abc(
+        basis_bitstrings, n_spatial, n_qubits, local_abcs_identity
+    )
+    entropy_fine_identity, entropy_coarse_identity, _ = shannon_block_decomposition(
+        h_sub, psi_identity, sectors_identity
+    )
+
+    sectors_optimized = local_utils.build_generalized_sectors_local_abc(
+        basis_bitstrings, n_spatial, n_qubits, local_abcs_optimized
+    )
+    r_opt = orbital_rotation_representation_R(u_optimized, basis_bitstrings, n_spatial)
+    h_rot = r_opt.conj().T @ (h_sub @ r_opt)
+    h_rot = 0.5 * (h_rot + h_rot.conj().T)
+    psi_rot = r_opt.conj().T @ psi_identity
+    entropy_fine_optimized, entropy_coarse_optimized, _ = shannon_block_decomposition(
+        h_rot, psi_rot, sectors_optimized
+    )
+
+    energy_identity = _energy_indicators_from_sectors(
+        h_sub, sectors_identity, energy_fci, f"{molecule} / local abc identity"
+    )
+    energy_optimized = _energy_indicators_from_sectors(
+        h_rot, sectors_optimized, energy_fci, f"{molecule} / local abc optimized"
+    )
+
+    return {
+        "Coarse_Entropy_Identity": entropy_coarse_identity,
+        "Coarse_Entropy_Optimized": entropy_coarse_optimized,
+        "Fine_Entropy_Identity": entropy_fine_identity,
+        "Fine_Entropy_Optimized": entropy_fine_optimized,
+        "Edec_Identity": energy_identity.E_dec_min,
+        "Edec_Optimized": energy_optimized.E_dec_min,
+        "Ecoupled_Identity": energy_identity.E_coupled,
+        "Ecoupled_Optimized": energy_optimized.E_coupled,
+        "Kcoupled_Identity": energy_identity.K_coupled,
+        "Kcoupled_Optimized": energy_optimized.K_coupled,
+        "EBO_Identity": energy_identity.E_BO,
+        "EBO_Optimized": energy_optimized.E_BO,
+        "NumSectors_Identity": energy_identity.n_sectors,
+        "NumSectors_Optimized": energy_optimized.n_sectors,
+        "DenseDiagnosticsSkipped": False,
+    }
+
+
+def _abc_to_angles(a: float, b: float, c: float) -> tuple[float, float]:
+    norm = float(np.sqrt(a * a + b * b + c * c))
+    if norm == 0.0:
+        raise ValueError("The fixed (a, b, c) vector must be non-zero.")
+    a_n, b_n, c_n = a / norm, b / norm, c / norm
+    phi1 = float(np.arccos(np.clip(c_n, -1.0, 1.0)))
+    phi2 = float(np.mod(np.arctan2(b_n, a_n), 2.0 * np.pi))
+    return phi1, phi2
+
+
+def _optimize_unitary_only(
+    gamma_a: np.ndarray,
+    gamma_b: np.ndarray,
+    gamma_ab: np.ndarray,
+    a: float,
+    b: float,
+    c: float,
+    pairs: list[tuple[int, int]] | None = None,
+) -> dict[str, Any]:
+    np.random.seed(RANDOM_SEED)
+    n_spatial = gamma_a.shape[0]
+    pairs = pairs or pair_list_for_n(n_spatial)
+    n_angles = len(pairs)
+    phi1, phi2 = _abc_to_angles(a, b, c)
+
+    def objective(thetas: np.ndarray) -> float:
+        x_params = np.concatenate([thetas, np.array([phi1, phi2])])
+        value, _, _, _, _, _ = variance_restricted(gamma_a, gamma_b, gamma_ab, x_params, pairs)
+        return value
+
+    best: dict[str, Any] | None = None
+    for restart in range(N_RESTARTS):
+        x0 = np.zeros(n_angles)
+        if restart > 0:
+            x0 = ANGLE_INIT_SCALE * np.random.randn(n_angles)
+
+        result = minimize(
+            objective,
+            x0=x0,
+            method=OPT_METHOD,
+            options={"maxiter": MAXITER, "disp": False},
+        )
+        score = objective(result.x)
+        if best is None or score < best["V"]:
+            best = {"res": result, "V": score, "pairs": pairs, "phi1": phi1, "phi2": phi2}
+
+    assert best is not None
+    return best
+
+
+def evaluate_single_point_fixed_abc(
+    molecule: str,
+    x: float,
+    fixed_abc: tuple[float, float, float] = (1.0/math.sqrt(6), 1.0/math.sqrt(6), -2.0/math.sqrt(6)),
+    **kwargs: Any,
+) -> dict[str, Any]:
+    cache_dir, geom_kw = _split_workflow_kwargs(kwargs)
+    use_exact_symmetries = _use_exact_symmetries_default(molecule, kwargs)
+    ref = _prepare_reference_state(molecule, x, cache_dir=cache_dir, **geom_kw)
+    gamma_a, gamma_b, gamma_ab = ref["gamma_a"], ref["gamma_b"], ref["gamma_ab"]
+    n_spatial = ref["n_spatial"]
+    energy_fci = ref["energy_fci"]
+    pairs = _rotation_pairs_for_ref(ref, use_exact_symmetries)
+    n_angles = len(pairs)
+
+    a_fixed, b_fixed, c_fixed = fixed_abc
+    phi1, phi2 = _abc_to_angles(a_fixed, b_fixed, c_fixed)
+    x_identity = np.zeros(n_angles + 2)
+    x_identity[n_angles] = phi1
+    x_identity[n_angles + 1] = phi2
+    v_identity, _, u_identity, a_n, b_n, c_n = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, x_identity, pairs
+    )
+
+    best = _optimize_unitary_only(
+        gamma_a, gamma_b, gamma_ab, a_fixed, b_fixed, c_fixed, pairs=pairs
+    )
+    x_opt = np.concatenate([best["res"].x, np.array([best["phi1"], best["phi2"]])])
+    v_optimized, _, u_optimized, _, _, _ = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, x_opt, best["pairs"]
+    )
+    _, exp_omega, _, _, _, _ = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, x_opt, best["pairs"]
+    )
+
+    sum_comm_identity, sum_sexp_identity, _ = _run_shared_abc_commutativity(
+        ref, molecule, u_identity, a_n, b_n, c_n, "fixed abc identity"
+    )
+    sum_comm_optimized, sum_sexp_optimized, _ = _run_shared_abc_commutativity(
+        ref, molecule, u_optimized, a_n, b_n, c_n, "fixed abc optimized"
+    )
+    dense_fields = (
+        _run_subspace_entropy_and_energy(
+            ref,
+            molecule,
+            energy_fci,
+            a_n,
+            b_n,
+            c_n,
+            u_identity,
+            a_n,
+            b_n,
+            c_n,
+            u_optimized,
+            "fixed abc identity",
+            "fixed abc optimized",
+            use_exact_symmetries=use_exact_symmetries,
+        )
+        if ref["use_dense"]
+        else _skipped_entropy_energy_fields()
+    )
+
+    row = _optimization_result_row(
+        workflow=WORKFLOW_FIXED_ABC,
+        molecule=molecule,
+        x=x,
+        ref=ref,
+        optimization_kind="unitary_only_fixed_abc",
+        best=best,
+        v_identity=v_identity,
+        v_optimized=v_optimized,
+        u_optimized=u_optimized,
+        exp_omega=exp_omega,
+        a=a_n,
+        b=b_n,
+        c=c_n,
+        params=x_opt,
+        thetas=np.asarray(best["res"].x, dtype=float),
+        operator_angles=np.array([best["phi1"], best["phi2"]], dtype=float),
+    )
+    row.update(
+        {
+            "Sum_CommSq_Identity": sum_comm_identity,
+            "Sum_CommSq_Optimized": sum_comm_optimized,
+            "Sum_Sexp_Identity": sum_sexp_identity,
+            "Sum_Sexp_Optimized": sum_sexp_optimized,
+            **dense_fields,
+            **_exact_symmetry_fields(ref, molecule),
+        }
+    )
+    return row
+
+
+def evaluate_single_point_shared_abc(
+    molecule: str,
+    x: float,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    cache_dir, geom_kw = _split_workflow_kwargs(kwargs)
+    use_exact_symmetries = _use_exact_symmetries_default(molecule, kwargs)
+    ref = _prepare_reference_state(molecule, x, cache_dir=cache_dir, **geom_kw)
+    gamma_a, gamma_b, gamma_ab = ref["gamma_a"], ref["gamma_b"], ref["gamma_ab"]
+    energy_fci = ref["energy_fci"]
+    pairs = _rotation_pairs_for_ref(ref, use_exact_symmetries)
+    n_pairs = len(pairs)
+    x_identity = np.zeros(n_pairs + 2)
+    x_identity[n_pairs] = np.arccos(-2.0 / np.sqrt(6.0))
+    x_identity[n_pairs + 1] = np.pi / 4.0
+    v_identity, _, u_identity, a_identity, b_identity, c_identity = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, x_identity, pairs
+    )
+
+    best = optimize_variance_restricted(gamma_a, gamma_b, gamma_ab, pairs=pairs)
+    v_optimized, _, u_optimized, a_opt, b_opt, c_opt = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
+    )
+    _, exp_omega, _, _, _, _ = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
+    )
+
+    sum_comm_identity, sum_sexp_identity, _ = _run_shared_abc_commutativity(
+        ref, molecule, u_identity, a_identity, b_identity, c_identity, "shared abc identity"
+    )
+    sum_comm_optimized, sum_sexp_optimized, _ = _run_shared_abc_commutativity(
+        ref, molecule, u_optimized, a_opt, b_opt, c_opt, "shared abc optimized"
+    )
+    dense_fields = (
+        _run_subspace_entropy_and_energy(
+            ref,
+            molecule,
+            energy_fci,
+            a_identity,
+            b_identity,
+            c_identity,
+            u_identity,
+            a_opt,
+            b_opt,
+            c_opt,
+            u_optimized,
+            "shared abc identity",
+            "shared abc optimized",
+            use_exact_symmetries=use_exact_symmetries,
+        )
+        if ref["use_dense"]
+        else _skipped_entropy_energy_fields()
+    )
+
+    row = _optimization_result_row(
+        workflow=WORKFLOW_SHARED_ABC,
+        molecule=molecule,
+        x=x,
+        ref=ref,
+        optimization_kind="unitary_and_shared_abc",
+        best=best,
+        v_identity=v_identity,
+        v_optimized=v_optimized,
+        u_optimized=u_optimized,
+        exp_omega=exp_omega,
+        a=a_opt,
+        b=b_opt,
+        c=c_opt,
+        params=np.asarray(best["res"].x, dtype=float),
+        thetas=np.asarray(best["res"].x[:n_pairs], dtype=float),
+        operator_angles=np.asarray(best["res"].x[n_pairs:], dtype=float),
+    )
+    row.update(
+        {
+            "Sum_CommSq_Identity": sum_comm_identity,
+            "Sum_CommSq_Optimized": sum_comm_optimized,
+            "Sum_Sexp_Identity": sum_sexp_identity,
+            "Sum_Sexp_Optimized": sum_sexp_optimized,
+            **dense_fields,
+            **_exact_symmetry_fields(ref, molecule),
+        }
+    )
+    return row
+
+
+def _run_local_abc_commutativity(
+    ref: dict[str, Any],
+    u_spatial: np.ndarray,
+    local_abcs,
+) -> tuple[float, float]:
+    if not local_utils.EVAL_STATE_SPECIFIC_COMMUTATIVITY:
+        return 0.0, float("nan")
+
+    psi = np.asarray(ref["v_sub"], dtype=np.complex128)
+    psi = psi / np.linalg.norm(psi)
+    h_mat = ref["h_sub"]
+
+    sum_exp = 0.0 + 0.0j
+    sum_comm_sq = 0.0
+
+    for i in range(ref["n_spatial"]):
+        si_ferm = local_utils.build_single_local_operator(
+            u_spatial, ref["n_spatial"], i, local_abcs, tol=local_utils.OP_COEF_TOL
+        )
+        si_full = local_utils.fermion_to_sparse_qubit(si_ferm, ref["n_qubits"])
+        si_mat = local_utils.restrict_operator_to_subspace(si_full, ref["basis_bitstrings"])
+
+        sum_exp += np.vdot(psi, si_mat.dot(psi))
+        comm_sq_i, _ = local_utils.comm_state_norm_sq(
+            h_mat, si_mat, psi, check_eigenstate=False
+        )
+        sum_comm_sq += comm_sq_i
+
+    return float(sum_comm_sq), float(np.real(sum_exp))
+
+
+def evaluate_single_point_local_abc(
+    molecule: str,
+    x: float,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    cache_dir, geom_kw = _split_workflow_kwargs(kwargs)
+    use_exact_symmetries = _use_exact_symmetries_default(molecule, kwargs)
+    ref = _prepare_reference_state(
+        molecule,
+        x,
+        cache_dir=cache_dir,
+        popcount_fn=local_utils.popcount,
+        solve_cisd_fn=local_utils.solve_cisd_state,
+        hf_bitstring_fn=local_utils.closed_shell_hf_bitstring,
+        **geom_kw,
+    )
+    gamma_a, gamma_b, gamma_ab = ref["gamma_a"], ref["gamma_b"], ref["gamma_ab"]
+    n_spatial = ref["n_spatial"]
+    pairs = _rotation_pairs_for_ref(ref, use_exact_symmetries)
+    n_pairs = len(pairs)
+
+    x_identity = np.zeros(n_pairs + 2 * n_spatial)
+    for i in range(n_spatial):
+        x_identity[n_pairs + 2 * i] = np.arccos(-2.0 / np.sqrt(6.0))
+        x_identity[n_pairs + 2 * i + 1] = np.pi / 4.0
+
+    v_identity, _, u_identity, local_abcs_identity = local_utils.variance_restricted_local_abc(
+        gamma_a, gamma_b, gamma_ab, x_identity, pairs
+    )
+    best = local_utils.optimize_variance_restricted_local_abc(gamma_a, gamma_b, gamma_ab, pairs=pairs)
+    v_optimized, _, u_optimized, local_abcs_optimized = local_utils.variance_restricted_local_abc(
+        gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
+    )
+    _, exp_omega, _, _ = local_utils.variance_restricted_local_abc(
+        gamma_a, gamma_b, gamma_ab, best["res"].x, best["pairs"]
+    )
+
+    sum_comm_identity, sum_sexp_identity = _run_local_abc_commutativity(
+        ref, u_identity, local_abcs_identity
+    )
+    sum_comm_optimized, sum_sexp_optimized = _run_local_abc_commutativity(
+        ref, u_optimized, local_abcs_optimized
+    )
+    dense_fields = (
+        _run_local_subspace_entropy_and_energy(
+            ref,
+            molecule,
+            ref["energy_fci"],
+            u_identity,
+            local_abcs_identity,
+            u_optimized,
+            local_abcs_optimized,
+        )
+        if ref["use_dense"]
+        else _skipped_entropy_energy_fields()
+    )
+
+    row = _optimization_result_row(
+        workflow=WORKFLOW_LOCAL_ABC,
+        molecule=molecule,
+        x=x,
+        ref=ref,
+        optimization_kind="unitary_and_local_abc",
+        best=best,
+        v_identity=v_identity,
+        v_optimized=v_optimized,
+        u_optimized=u_optimized,
+        exp_omega=exp_omega,
+        a=float("nan"),
+        b=float("nan"),
+        c=float("nan"),
+        params=np.asarray(best["res"].x, dtype=float),
+        thetas=np.asarray(best["res"].x[:n_pairs], dtype=float),
+        operator_angles=np.asarray(best["res"].x[n_pairs:], dtype=float),
+        local_abcs=local_abcs_optimized,
+    )
+    row.update(
+        {
+            "Sum_CommSq_Identity": sum_comm_identity,
+            "Sum_CommSq_Optimized": sum_comm_optimized,
+            "Sum_Sexp_Identity": sum_sexp_identity,
+            "Sum_Sexp_Optimized": sum_sexp_optimized,
+            **dense_fields,
+            **_exact_symmetry_fields(ref, molecule),
+        }
+    )
+    return row
+
+
+def evaluate_single_point(
+    workflow: str,
+    molecule: str,
+    x: float,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    if workflow == WORKFLOW_FIXED_ABC:
+        return evaluate_single_point_fixed_abc(molecule=molecule, x=x, **kwargs)
+    if workflow == WORKFLOW_SHARED_ABC:
+        row = evaluate_single_point_shared_abc(molecule=molecule, x=x, **kwargs)
+        row["Workflow"] = WORKFLOW_SHARED_ABC
+        return row
+    if workflow == WORKFLOW_LOCAL_ABC:
+        row = evaluate_single_point_local_abc(molecule=molecule, x=x, **kwargs)
+        row["Workflow"] = WORKFLOW_LOCAL_ABC
+        return row
+    raise ValueError(f"Unsupported workflow '{workflow}'. Choose from: {sorted(VALID_WORKFLOWS)}")
+
+
+def _fieldnames_for_workflow(workflow: str, molecule: str, **kwargs: Any) -> list[str] | None:
+    return OPT_RESULT_FIELDNAMES
+
+
+def run_scan(
+    workflow: str,
+    molecule: str,
+    grid: Iterable[float],
+    csv_filename: str | None = None,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    if workflow not in VALID_WORKFLOWS:
+        raise ValueError(f"Unsupported workflow '{workflow}'. Choose from: {sorted(VALID_WORKFLOWS)}")
+
+    results: list[dict[str, Any]] = []
+    fieldnames = _fieldnames_for_workflow(workflow, molecule, **kwargs)
+
+    if csv_filename is not None:
+        csv_path = Path(csv_filename)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(csv_path, mode="w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames or OPT_RESULT_FIELDNAMES)
+            writer.writeheader()
+            for x in grid:
+                try:
+                    row = evaluate_single_point(workflow=workflow, molecule=molecule, x=float(x), **kwargs)
+                    results.append(row)
+                    writer.writerow(row)
+                    handle.flush()
+                except Exception as exc:
+                    print(f"[{workflow}/{molecule}] Error at x={x}: {exc}")
+        return results
+
+    for x in grid:
+        try:
+            row = evaluate_single_point(workflow=workflow, molecule=molecule, x=float(x), **kwargs)
+            results.append(row)
+        except Exception as exc:
+            print(f"[{workflow}/{molecule}] Error at x={x}: {exc}")
+    return results
+
+
+def main(
+    workflow: str = WORKFLOW_SHARED_ABC,
+    molecule: str = "lih",
+    grid: Iterable[float] | None = None,
+    csv_filename: str | None = None,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    molecule_name = molecule.lower()
+    if workflow not in VALID_WORKFLOWS:
+        raise ValueError(f"Unsupported workflow '{workflow}'. Choose from: {sorted(VALID_WORKFLOWS)}")
+    if grid is None:
+        grid = _default_grid_for_molecule(molecule_name)
+    if csv_filename is None:
+        csv_filename = _default_opt_results_path(molecule_name, workflow)
+    return run_scan(
+        workflow=workflow,
+        molecule=molecule_name,
+        grid=grid,
+        csv_filename=csv_filename,
+        **kwargs,
+    )
+
+
+def collect_orbital_diagram_data(
+    molecule: str,
+    x: float,
+    fixed_abc: tuple[float, float, float] = (1.0 / math.sqrt(6), 1.0 / math.sqrt(6), -2.0 / math.sqrt(6)),
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Collect HF/fixed/shared orbital-diagram data for one geometry point."""
+    molecule_name = molecule.lower()
+    cache_dir, geom_kw = _split_workflow_kwargs(kwargs)
+    ref = _prepare_reference_state(molecule_name, x, cache_dir=cache_dir, **geom_kw)
+
+    energy_hf = ref["energy_hf"]
+    energy_fci = ref["energy_fci"]
+    n_spatial = ref["n_spatial"]
+    n_electrons = ref["n_electrons"]
+    n_up = n_electrons // 2
+    n_down = n_electrons // 2
+    gamma_a, gamma_b, gamma_ab = ref["gamma_a"], ref["gamma_b"], ref["gamma_ab"]
+    pairs = pair_list_for_n(n_spatial)
+    n_pairs = len(pairs)
+
+    a_fixed, b_fixed, c_fixed = fixed_abc
+    best_fixed = _optimize_unitary_only(gamma_a, gamma_b, gamma_ab, a_fixed, b_fixed, c_fixed)
+    x_fixed_opt = np.concatenate([best_fixed["res"].x, np.array([best_fixed["phi1"], best_fixed["phi2"]])])
+    _, _, u_fixed_opt, a_fixed_opt, b_fixed_opt, c_fixed_opt = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, x_fixed_opt, best_fixed["pairs"]
+    )
+
+    best_shared = optimize_variance_restricted(gamma_a, gamma_b, gamma_ab)
+    v_shared_opt, _, u_shared_opt, a_shared_opt, b_shared_opt, c_shared_opt = variance_restricted(
+        gamma_a, gamma_b, gamma_ab, best_shared["res"].x, best_shared["pairs"]
+    )
+
+    # Frozen-density rotated Fock spectrum:
+    # start from canonical HF Fock in spatial-MO basis (diag of mo energies),
+    # rotate representation by U, and diagonalize to obtain frame-resolved levels.
+    spatial_hf_energies = np.asarray(ref.get("orbital_energies", []), dtype=float)
+    if spatial_hf_energies.size == 0:
+        raise ValueError(
+            "orbital_energies missing from cache; regenerate Hamiltonian HDF5 with "
+            "generate_hamiltonians.py."
+        )
+    if spatial_hf_energies.shape[0] != n_spatial:
+        raise ValueError("HF orbital energies are inconsistent with n_spatial.")
+    fock_hf = np.diag(spatial_hf_energies)
+
+    def _expand_spatial_to_spin(spatial_vals: np.ndarray) -> np.ndarray:
+        spin_vals = np.empty(2 * len(spatial_vals), dtype=float)
+        spin_vals[0::2] = spatial_vals
+        spin_vals[1::2] = spatial_vals
+        return spin_vals
+
+    def _frame_aufbau_spin_occupation() -> np.ndarray:
+        return _aufbau_spin_occupation(n_spatial=n_spatial, n_up=n_up, n_down=n_down)
+
+    def _frame_payload(U: np.ndarray, label: str) -> dict[str, Any]:
+        fock_rot = U.T @ fock_hf @ U
+        fock_rot = 0.5 * (fock_rot + fock_rot.T)
+        spatial_levels = np.linalg.eigvalsh(fock_rot)
+        one_body = _expand_spatial_to_spin(spatial_levels)
+        occ = _frame_aufbau_spin_occupation()
+        return {
+            "label": label,
+            "U": U,
+            "one_body": one_body,
+            "one_body_shifted": one_body,
+            "occ": occ.astype(int),
+        }
+
+    frames = [
+        _frame_payload(np.eye(n_spatial), "HF"),
+        _frame_payload(u_fixed_opt, "Fixed-optimized"),
+        _frame_payload(u_shared_opt, "Shared-optimized"),
+    ]
+
+    return {
+        "molecule": molecule_name,
+        "x": x,
+        "energy_hf": energy_hf,
+        "n_spatial": n_spatial,
+        "n_up": n_up,
+        "n_down": n_down,
+        "energy_fci": energy_fci,
+        "abc_fixed_optimized": (a_fixed_opt, b_fixed_opt, c_fixed_opt),
+        "abc_shared_optimized": (a_shared_opt, b_shared_opt, c_shared_opt),
+        "V_fixed_optimized": float(best_fixed["V"]),
+        "V_shared_optimized": v_shared_opt,
+        "frames": frames,
+    }
+
+
+def plot_orbital_diagram_for_point(
+    molecule: str,
+    x: float,
+    save_path: str | None = None,
+    fixed_abc: tuple[float, float, float] = (1.0 / math.sqrt(6), 1.0 / math.sqrt(6), -2.0 / math.sqrt(6)),
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Plot HF/fixed/shared frozen-density Fock orbital energies."""
+    data = collect_orbital_diagram_data(
+        molecule=molecule,
+        x=x,
+        fixed_abc=fixed_abc,
+        **kwargs,
+    )
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 7))
+    x_positions = np.arange(len(data["frames"]))
+
+    for frame_idx, frame in enumerate(data["frames"]):
+        energies = frame["one_body_shifted"]
+        occ = frame["occ"]
+        for mode, energy in enumerate(energies):
+            y = float(energy)
+            color = "tab:blue" if int(occ[mode]) == 1 else "0.5"
+            ax.hlines(y, frame_idx - 0.25, frame_idx + 0.25, color=color, linewidth=2.0)
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([f["label"] for f in data["frames"]])
+    ax.set_xlim(-0.5, len(data["frames"]) - 0.2)
+    ax.set_ylabel("Frozen-density Fock orbital energy")
+    ax.grid(alpha=0.25, axis="y")
+    ax.set_title(f"{data['molecule']} orbital diagram | x={x:.4f}")
+    ax.plot([], [], color="tab:blue", lw=2.0, label="occupied")
+    ax.plot([], [], color="0.5", lw=2.0, label="virtual")
+    ax.legend(loc="best")
+
+    fig.tight_layout()
+
+    if save_path is None:
+        save_path = f"{data['molecule']}_orbital_diagram_hf_fixed_shared_x{x:.4f}.png"
+    fig.savefig(save_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+    data["plot_path"] = save_path
+    return data
+

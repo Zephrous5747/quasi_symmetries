@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from optimization_abc_utils import (
+from quasi_symmetries.optimization import (
     ANGLE_INIT_SCALE,
     build_U_from_thetas,
     check_R_vs_direct_seniority,

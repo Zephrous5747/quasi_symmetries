@@ -6,19 +6,19 @@ import unittest
 
 import numpy as np
 
-from n2_action_diagnostics import (
+from quasi_symmetries.diagnostics.n2_action import (
     OrbitalRotationAction,
     RotatedHamiltonian,
     _coarse_entropy,
     _quartet_sectors,
 )
-from optimization_abc_utils import (
+from quasi_symmetries.optimization import (
     SparseSubspaceHamiltonian,
     build_U_from_thetas,
     decoupled_energy_lazy,
     pair_list_for_n,
 )
-from quartet_optimization_utils import (
+from quasi_symmetries.optimization.quartet import (
     matching_edges,
     optimize_fixed_edge_quartets,
     quartet_parity_diagonal,

@@ -7,8 +7,8 @@ import unittest
 import numpy as np
 from scipy.optimize import minimize
 
-from optimization_abc_utils import ANGLE_INIT_SCALE, build_U_from_thetas, pair_list_for_n
-from parity_parent_hamiltonians import (
+from quasi_symmetries.optimization import ANGLE_INIT_SCALE, build_U_from_thetas, pair_list_for_n
+from quasi_symmetries.theory.parity_parent import (
     external_singleton_spin_orbitals,
     pair_parity_variance_sum,
     parent_ground_state,
@@ -16,7 +16,7 @@ from parity_parent_hamiltonians import (
     project_h_sub_to_singleton_parent,
     singleton_parity_variance_sum,
 )
-from quartet_optimization_utils import (
+from quasi_symmetries.optimization.quartet import (
     matching_edges,
     optimize_fixed_edge_quartets,
     quartet_cost_for_u,

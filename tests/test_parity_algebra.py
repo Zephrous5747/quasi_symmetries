@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 from openfermion import FermionOperator
 
-from parity_parent_hamiltonians import (
+from quasi_symmetries.theory.parity_parent import (
     build_incidence_matrix,
     charge_vector_for_modes,
     onebody_allowed,

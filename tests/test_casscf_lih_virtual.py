@@ -7,8 +7,8 @@ import unittest
 import numpy as np
 from scipy.optimize import minimize
 
-from optimization_abc_utils import ANGLE_INIT_SCALE, build_U_from_thetas, pair_list_for_n
-from parity_parent_hamiltonians import (
+from quasi_symmetries.optimization import ANGLE_INIT_SCALE, build_U_from_thetas, pair_list_for_n
+from quasi_symmetries.theory.parity_parent import (
     casscf_sector_ground_energy,
     casscf_sector_indices,
     casscf_spin_orbital_partition,
@@ -19,7 +19,7 @@ from parity_parent_hamiltonians import (
     reflection_diagonal,
     singleton_parity_variance_sum,
 )
-from quartet_optimization_utils import rotate_state_to_orbital_frame
+from quasi_symmetries.optimization.quartet import rotate_state_to_orbital_frame
 from tests.helpers import (
     LIH_N_RESTARTS,
     LIH_OPT_MAXFEV,
