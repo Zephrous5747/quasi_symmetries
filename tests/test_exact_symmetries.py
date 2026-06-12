@@ -21,6 +21,7 @@ from quasi_symmetries.symmetry.labels import (
     fallback_sto3g_irrep_labels,
     labels_from_irrep_list,
     load_symmetry_labels,
+    molecule_point_group,
 )
 
 
@@ -53,6 +54,10 @@ class TestExactSymmetryOperators(unittest.TestCase):
     def test_n2_ungerade_indices(self) -> None:
         labels = labels_from_irrep_list("n2", fallback_sto3g_irrep_labels("n2", 10))
         self.assertEqual(labels.n2_ungerade_indices(), [2, 3, 4, 6, 7, 8])
+
+    def test_point_groups_for_h2o_and_n2(self) -> None:
+        self.assertEqual(molecule_point_group("h2o"), "C2v")
+        self.assertEqual(molecule_point_group("n2"), "D2h")
 
     def test_product_parity_involutory(self) -> None:
         labels = labels_from_irrep_list("h2o", fallback_sto3g_irrep_labels("h2o", 7))

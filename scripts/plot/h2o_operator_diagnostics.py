@@ -1,4 +1,4 @@
-"""Plot H2O mixed-pool vs seniority (fixed ABC) operator diagnostics."""
+"""Plot H2O mixed-pool vs parity-seniority operator diagnostics."""
 
 from __future__ import annotations
 
@@ -12,10 +12,15 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 SERIES = (
-    ("seniority_canonical", "Seniorities (canonical)", "#000000", "x", ":"),
-    ("mixed_canonical", "Mixed pool (canonical)", "#999999", "D", "--"),
-    ("seniority_optimized", "Seniority optimized", "#E69F00", "s", "-."),
-    ("mixed_optimized", "Mixed optimized", "#009E73", "o", "-"),
+    ("seniority_canonical", "Parity Seniorities (canonical)", "#000000", "x", ":"),
+    ("mixed_canonical", "Mixed Pool (canonical)", "#999999", "D", "--"),
+    ("seniority_optimized", "Parity Seniorities (optimized)", "#E69F00", "s", "-."),
+    ("mixed_optimized", "Mixed Pool (optimized)", "#009E73", "o", "-"),
+)
+
+DEFAULT_TITLE = (
+    r"H$_2$O operator diagnostics: mixed pool selected "
+    r"$s_0$, $s_1$, $s_2$, $s_{36}$, $s_{45}$"
 )
 
 
@@ -57,12 +62,15 @@ def _points(
 
 def plot_h2o_operator_diagnostics(
     *,
-    fixed_abc_csv: Path,
+    seniority_csv: Path,
     mixed_pool_csv: Path,
     output_path: Path,
-    title: str = "H2O operator diagnostics",
+    title: str = DEFAULT_TITLE,
+    fixed_abc_csv: Path | None = None,
 ) -> None:
-    seniority_rows = _read_rows(fixed_abc_csv)
+    if fixed_abc_csv is not None:
+        seniority_csv = fixed_abc_csv
+    seniority_rows = _read_rows(seniority_csv)
     mixed_rows = _read_rows(mixed_pool_csv)
     if not seniority_rows or not mixed_rows:
         raise ValueError("Both CSV inputs must contain at least one geometry row.")
@@ -145,9 +153,15 @@ def plot_h2o_operator_diagnostics(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--seniority-csv",
+        type=Path,
+        default=TABLES_DIR / "h2o_parity_seniority_diagnostics.csv",
+    )
+    parser.add_argument(
         "--fixed-abc-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_quasi_symmetry_fixed_abc.csv",
+        default=None,
+        help="Deprecated alias for --seniority-csv.",
     )
     parser.add_argument(
         "--mixed-pool-csv",
@@ -161,9 +175,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     plot_h2o_operator_diagnostics(
-        fixed_abc_csv=args.fixed_abc_csv,
+        seniority_csv=args.seniority_csv,
         mixed_pool_csv=args.mixed_pool_csv,
         output_path=args.output,
+        fixed_abc_csv=args.fixed_abc_csv,
     )
 
 

@@ -167,7 +167,7 @@ def main() -> None:
         default=IMAGES_DIR / "quartets/h2o_mixed_pool_diagnostics_rerun.png",
     )
     parser.add_argument(
-        "--fixed-abc-csv",
+        "--seniority-csv",
         type=Path,
         default=TABLES_DIR / "h2o_quasi_symmetry_fixed_abc.csv",
     )
@@ -227,7 +227,7 @@ def main() -> None:
     from scripts.plot.h2o_operator_diagnostics import plot_h2o_operator_diagnostics
 
     plot_h2o_operator_diagnostics(
-        fixed_abc_csv=args.fixed_abc_csv,
+        seniority_csv=args.seniority_csv,
         mixed_pool_csv=args.output_csv,
         output_path=args.plot_output,
     )

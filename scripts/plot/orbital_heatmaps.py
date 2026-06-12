@@ -1,7 +1,8 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 """Plot MO-coefficient and quartet-variance heatmaps across orbital frames."""
 
 from __future__ import annotations
+
+from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 
 import argparse
 import csv
@@ -549,7 +550,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=IMAGES_DIR / 'orbital_heatmaps"),
+        default=IMAGES_DIR / "orbital_heatmaps",
     )
     parser.add_argument(
         "--molecule",

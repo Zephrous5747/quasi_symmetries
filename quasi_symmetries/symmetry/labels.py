@@ -20,7 +20,8 @@ _STO3G_FALLBACK_IRREPS: dict[str, list[str]] = {
 
 _POINT_GROUPS = {
     "h2o": "C2v",
-    "n2": "Dooh",
+    # Finite D2h subgroup used by PySCF for homonuclear diatomics (sigma/g/u labels).
+    "n2": "D2h",
 }
 
 
@@ -52,7 +53,7 @@ def fallback_sto3g_irrep_labels(molecule: str, n_spatial: int) -> list[str]:
 
 
 def inversion_parity_from_irrep(label: str) -> int:
-    """Return +1 (gerade) or -1 (ungerade) for diatomic Dooh labels."""
+    """Return +1 (gerade) or -1 (ungerade) for diatomic D2h labels."""
     normalized = normalize_irrep_label(label)
     last = normalized[-1].lower()
     if last == "u":
@@ -201,6 +202,25 @@ def labels_from_irrep_list(molecule: str, irrep_labels: Iterable[str]) -> Molecu
     )
 
 
+def _mo_irrep_labels_from_pyscf(mol, mo_coeff: np.ndarray) -> list[str]:
+    """Return normalized irrep label for each MO column (PySCF version tolerant)."""
+    from pyscf import symm
+    import inspect
+
+    mo = np.asarray(mo_coeff, dtype=np.complex128)
+    signature = inspect.signature(symm.label_orb_symm)
+    if len(signature.parameters) >= 4:
+        raw = symm.label_orb_symm(mol, mol.irrep_name, mol.symm_orb, mo)
+        if isinstance(raw, (str, int)):
+            raw = [raw]
+        return [normalize_irrep_label(label) for label in raw]
+
+    return [
+        normalize_irrep_label(symm.label_orb_symm(mol, mo[:, index]))
+        for index in range(mol.nao)
+    ]
+
+
 def extract_labels_from_pyscf(
     geometry: list[tuple[str, tuple[float, float, float]]],
     molecule: str,
@@ -226,10 +246,7 @@ def extract_labels_from_pyscf(
     )
     mol.build()
     mf = scf.RHF(mol).run(verbose=0)
-    irrep_labels = [
-        normalize_irrep_label(symm.label_orb_symm(mol, mf.mo_coeff[:, index]))
-        for index in range(mol.nao)
-    ]
+    irrep_labels = _mo_irrep_labels_from_pyscf(mol, mf.mo_coeff)
     return MoleculeSymmetryLabels(
         molecule=mol_name,
         point_group=point_group,

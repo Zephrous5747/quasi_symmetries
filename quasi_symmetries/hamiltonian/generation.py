@@ -113,20 +113,116 @@ def _attach_symmetry_labels(
     return labels_from_irrep_list(mol_name, labels)
 
 
+def _pyscf_nuclear_energy(mol, mf) -> float:
+    """Return nuclear repulsion energy across PySCF versions."""
+    for source in (mf, mol):
+        enuc = getattr(source, "energy_nuc", None)
+        if enuc is None:
+            continue
+        if callable(enuc):
+            enuc = enuc()
+        return float(enuc)
+    raise AttributeError("Could not obtain PySCF nuclear repulsion energy.")
+
+
+def _real_mo_coefficients(mf) -> np.ndarray:
+    """Return real MO coefficients for ao2mo (PySCF rejects complex128 arrays)."""
+    mo = np.asarray(mf.mo_coeff)
+    if np.iscomplexobj(mo):
+        imag_max = float(np.max(np.abs(np.imag(mo))))
+        if imag_max > 1e-8:
+            raise ValueError(
+                f"MO coefficients have significant imaginary part (max|Im|={imag_max:.2e})."
+            )
+        mo = mo.real
+    return np.asarray(mo, dtype=np.float64, order="C")
+
+
+def _pyscf_mo_integrals(mol, mf) -> tuple[np.ndarray, np.ndarray]:
+    """One- and two-body MO integrals in OpenFermion InteractionOperator layout."""
+    from pyscf import ao2mo
+
+    mo = _real_mo_coefficients(mf)
+    nmo = mo.shape[1]
+    h1 = mo.T @ mf.get_hcore() @ mo
+    eri_compressed = ao2mo.kernel(mol, mo)
+    if getattr(eri_compressed, "ndim", 1) == 4:
+        eri_mo = np.asarray(eri_compressed, dtype=float)
+    else:
+        eri_mo = ao2mo.restore(1, eri_compressed, nmo)
+    # OpenFermion: h[p,q,r,s] = (ps|qr) = pyscf_eri[p,s,q,r]
+    two_body = np.asarray(eri_mo.transpose(0, 2, 3, 1), order="C", dtype=float)
+    return h1, two_body
+
+
 def _build_fermion_hamiltonian_from_pyscf_mf(mol, mf):
     """Build an OpenFermion FermionOperator in the SCF MO basis."""
     from openfermion import InteractionOperator, get_fermion_operator
-    from pyscf import ao2mo
+    from openfermion.chem.molecular_data import spinorb_from_spatial
 
-    nmo = mol.nao
-    h1 = mf.mo_coeff.T @ mf.get_hcore() @ mf.mo_coeff
-    eri = ao2mo.restore(8, ao2mo.kernel(mol, mf.mo_coeff), nmo)
+    h1_spatial, two_body_spatial = _pyscf_mo_integrals(mol, mf)
+    one_body, two_body = spinorb_from_spatial(h1_spatial, two_body_spatial)
     interaction = InteractionOperator(
-        constant=mf.energy_nuc,
-        one_body_tensor=h1,
-        two_body_tensor=eri,
+        constant=_pyscf_nuclear_energy(mol, mf),
+        one_body_tensor=one_body,
+        two_body_tensor=0.5 * two_body,
     )
     return get_fermion_operator(interaction)
+
+
+def hf_energy_on_subspace(
+    h_sub: sp.spmatrix,
+    basis_bitstrings: list[int],
+    *,
+    n_electrons: int,
+    n_spatial: int,
+    hf_bitstring_fn=closed_shell_hf_bitstring,
+) -> float:
+    """Expectation value of the HF determinant on the fixed-N subspace."""
+    n_qubits = 2 * n_spatial
+    hf_bitstring = int(hf_bitstring_fn(n_electrons, n_spatial))
+    if hf_bitstring not in basis_bitstrings:
+        raise ValueError("HF determinant is outside the fixed-N subspace.")
+    index = basis_bitstrings.index(hf_bitstring)
+    vector = np.zeros(len(basis_bitstrings), dtype=np.complex128)
+    vector[index] = 1.0
+    return float(np.real(np.vdot(vector, h_sub.dot(vector))))
+
+
+def validate_reference_energies(
+    ref: dict[str, Any],
+    *,
+    tol: float = 5e-4,
+) -> dict[str, float]:
+    """Return energy diagnostics and raise if basic variational bounds fail."""
+    e_hf_sub = hf_energy_on_subspace(
+        ref["h_sub"],
+        ref["basis_bitstrings"],
+        n_electrons=int(ref["n_electrons"]),
+        n_spatial=int(ref["n_spatial"]),
+    )
+    e_hf = float(ref["energy_hf"])
+    e_fci = float(ref["energy_fci"])
+    e_cisd = float(ref["energy_cisd"])
+    diagnostics = {
+        "E_HF_reported": e_hf,
+        "E_HF_on_sub": e_hf_sub,
+        "E_FCI": e_fci,
+        "E_CISD": e_cisd,
+        "delta_HF_reported_vs_sub": e_hf - e_hf_sub,
+        "delta_FCI_vs_HF_sub": e_fci - e_hf_sub,
+    }
+    if e_fci > e_hf_sub + tol:
+        raise ValueError(
+            "FCI energy exceeds HF energy on h_sub: "
+            f"E_FCI={e_fci:.8f}, E_HF_on_sub={e_hf_sub:.8f}"
+        )
+    if abs(e_hf - e_hf_sub) > max(tol, 5e-3):
+        raise ValueError(
+            "Reported HF energy does not match <HF|H|HF> on h_sub: "
+            f"reported={e_hf:.8f}, on_sub={e_hf_sub:.8f}"
+        )
+    return diagnostics
 
 
 def _try_symmetry_adapted_hamiltonian(
@@ -137,7 +233,7 @@ def _try_symmetry_adapted_hamiltonian(
     charge: int,
     multiplicity: int,
 ) -> tuple[Any, MoleculeSymmetryLabels, float] | None:
-    """When PySCF is available, rebuild H in symmetry-adapted MOs."""
+    """When PySCF is available, rebuild H in symmetry-adapted MOs (C2v for H2O, D2h for N2)."""
     mol_name = molecule.lower()
     if molecule_point_group(mol_name) is None:
         return None
@@ -206,6 +302,11 @@ def build_reference_state_with_pyscf(
     symmetry_labels: MoleculeSymmetryLabels | None = None
     symmetry_energy_hf: float | None = None
     h_fermion = None
+    enforce_point_group = (
+        use_symmetry
+        and molecule is not None
+        and molecule.lower() in {"h2o", "n2"}
+    )
     if use_symmetry and molecule is not None:
         sym_payload = _try_symmetry_adapted_hamiltonian(
             molecule=molecule,
@@ -216,6 +317,12 @@ def build_reference_state_with_pyscf(
         )
         if sym_payload is not None:
             h_fermion, symmetry_labels, symmetry_energy_hf = sym_payload
+        elif enforce_point_group:
+            pg = molecule_point_group(molecule)
+            raise RuntimeError(
+                f"Point-group symmetry ({pg}) adaptation failed for {molecule}; "
+                "install PySCF and regenerate caches in symmetry-adapted MOs."
+            )
 
     if h_fermion is None:
         h_interaction = mol.get_molecular_hamiltonian()
@@ -276,6 +383,18 @@ def build_reference_state_with_pyscf(
             multiplicity=multiplicity,
         )
 
+    energy_checks = validate_reference_energies(
+        {
+            "h_sub": h_sub,
+            "basis_bitstrings": basis_bitstrings,
+            "n_electrons": n_electrons,
+            "n_spatial": n_spatial,
+            "energy_hf": energy_hf,
+            "energy_fci": energy_fci,
+            "energy_cisd": energy_cisd,
+        }
+    )
+
     return {
         "mol": mol,
         "description": description,
@@ -300,6 +419,7 @@ def build_reference_state_with_pyscf(
         "gamma_b": gamma_b,
         "gamma_ab": gamma_ab,
         "symmetry_labels": symmetry_labels,
+        "energy_checks": energy_checks,
     }
 
 
