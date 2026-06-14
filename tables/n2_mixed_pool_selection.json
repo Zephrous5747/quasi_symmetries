@@ -1,0 +1,107 @@
+{
+  "1.2": {
+    "geometry_param": 1.2,
+    "singles": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "quartets": [
+      [
+        5,
+        8
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        4,
+        9
+      ]
+    ],
+    "reference_frame": "seniority_optimized",
+    "seniority_single_variances": [
+      1.131641383134152e-05,
+      2.8540663188358906e-06,
+      0.01293152554817345,
+      0.0037369090330054977
+    ],
+    "seniority_quartet_variances": [
+      0.0,
+      0.0,
+      0.009957580758077289
+    ]
+  },
+  "1.4": {
+    "geometry_param": 1.4,
+    "singles": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "quartets": [
+      [
+        5,
+        8
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        4,
+        9
+      ]
+    ],
+    "reference_frame": "seniority_optimized",
+    "seniority_single_variances": [
+      2.438116396996648e-06,
+      5.620799417016542e-06,
+      0.11939375345685055,
+      0.004739843830823376
+    ],
+    "seniority_quartet_variances": [
+      0.0,
+      0.0,
+      0.12033954596510366
+    ]
+  },
+  "2.2": {
+    "geometry_param": 2.2,
+    "singles": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "quartets": [
+      [
+        5,
+        8
+      ],
+      [
+        6,
+        7
+      ],
+      [
+        4,
+        9
+      ]
+    ],
+    "reference_frame": "seniority_optimized",
+    "seniority_single_variances": [
+      2.3349309918874184e-07,
+      5.353103124106084e-07,
+      0.0008447917447426123,
+      0.0009953562194863208
+    ],
+    "seniority_quartet_variances": [
+      2.220446049250313e-16,
+      2.220446049250313e-16,
+      0.0009767786878224216
+    ]
+  }
+}
