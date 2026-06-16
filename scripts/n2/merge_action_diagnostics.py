@@ -1,4 +1,3 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 """Merge sparse action diagnostics back into N2 summary CSV tables."""
 
 from __future__ import annotations
@@ -6,6 +5,8 @@ from __future__ import annotations
 import csv
 import math
 from pathlib import Path
+
+from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 
 ACTION_COLS = [
     "Build_Seconds",
@@ -120,6 +121,18 @@ def main() -> None:
         tables / "n2_quasi_symmetry_fixed_abc.csv",
         tables / "n2_fixed_abc_action_diagnostics.csv",
         tables / "n2_quasi_symmetry_fixed_abc.csv",
+        quartet=False,
+    )
+    merge_tables(
+        tables / "n2_mixed_pool_summary.csv",
+        tables / "n2_mixed_pool_action_diagnostics.csv",
+        tables / "n2_mixed_pool_summary.csv",
+        quartet=False,
+    )
+    merge_tables(
+        tables / "n2_parity_seniority_summary.csv",
+        tables / "n2_parity_seniority_action_diagnostics.csv",
+        tables / "n2_parity_seniority_summary.csv",
         quartet=False,
     )
 

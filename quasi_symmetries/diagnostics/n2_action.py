@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,10 @@ from typing import Iterable
 import numpy as np
 
 from quasi_symmetries.config import CACHE_DIR, TABLES_DIR
+from quasi_symmetries.diagnostics.mixed_pool import (
+    mixed_pool_diagonals,
+    mixed_pool_sectors,
+)
 from quasi_symmetries.diagnostics.sparse_energy import (
     SparseSubspaceHamiltonian,
     energy_sector_diagnostics_sparse,
@@ -30,8 +35,10 @@ from quasi_symmetries.optimization import (
     pair_list_for_n,
 )
 from quasi_symmetries.optimization.quartet import (
+    MixedOperatorPool,
     _determinant_transform_matrix,
     _spin_occupation_data,
+    normalize_edge,
     quartet_parity_diagonal,
 )
 from quasi_symmetries.symmetry.exact import (
@@ -168,6 +175,35 @@ def _parse_edges(value: str) -> list[tuple[int, int]]:
     return [tuple(int(part) for part in edge.split("-")) for edge in value.split()]
 
 
+def _parse_pairs(value: str) -> list[tuple[int, int]]:
+    return [(int(p), int(q)) for p, q in json.loads(value)]
+
+
+def _parse_pool(row: dict[str, str], n_spatial: int) -> MixedOperatorPool:
+    singles = tuple(int(item) for item in row.get("Pool_Singles", "").split() if item)
+    quartets_raw = row.get("Pool_Quartets", "").strip()
+    if quartets_raw:
+        quartets = tuple(
+            normalize_edge(tuple(int(part) for part in item.split("-")))
+            for item in quartets_raw.split()
+        )
+    else:
+        quartets = ()
+    if not singles and n_spatial:
+        singles = tuple(range(n_spatial))
+    return MixedOperatorPool(singles=singles, quartets=quartets)
+
+
+def _mixed_pool_sectors(
+    ref: dict,
+    pool: MixedOperatorPool,
+    *,
+    allowed_indices: list[int] | None = None,
+) -> dict[tuple[int, ...], list[int]]:
+    sectors = mixed_pool_sectors(ref["basis_bitstrings"], pool, ref["n_spatial"])
+    return _filter_sectors_to_indices(sectors, allowed_indices)
+
+
 def _exact_symmetry_allowed_indices(ref: dict, *, use_exact_symmetries: bool = True) -> list[int] | None:
     if not use_exact_symmetries:
         return None
@@ -262,6 +298,7 @@ def _energy_diagnostics(
     action: OrbitalRotationAction | None,
     *,
     energy_tol: float = 1e-3,
+    profile: bool = False,
 ) -> dict[str, float | int | bool]:
     h_sub = ref["h_sub"]
     energy_fci = float(ref["energy_fci"])
@@ -276,6 +313,7 @@ def _energy_diagnostics(
         energy_fci,
         tol=energy_tol,
         lazy=lazy,
+        profile=profile,
     )
 
 
@@ -306,9 +344,12 @@ def _diagnose_diagonals(
     thetas: np.ndarray,
     diagonals: list[np.ndarray],
     sectors: dict[tuple[int, ...], list[int]],
+    *,
+    pairs: list[tuple[int, int]] | None = None,
 ) -> dict[str, object]:
     n_spatial = ref["n_spatial"]
-    pairs = _rotation_pairs_for_ref(ref)
+    if pairs is None:
+        pairs = _rotation_pairs_for_ref(ref)
     u_spatial = build_U_from_thetas(n_spatial, thetas, pairs)
     start = time.perf_counter()
     action = OrbitalRotationAction(u_spatial, ref["basis_bitstrings"], n_spatial)
@@ -341,8 +382,9 @@ def _diagnose_diagonals(
         comm_sq_values.append(float(np.real(np.vdot(residual, residual))))
 
     energy_start = time.perf_counter()
-    identity_energy = _energy_diagnostics(ref, sectors, action=None)
-    optimized_energy = _energy_diagnostics(ref, sectors, action=action)
+    profile_energy = os.environ.get("SPARSE_ENERGY_PROFILE", "").lower() in {"1", "true", "yes"}
+    identity_energy = _energy_diagnostics(ref, sectors, action=None, profile=profile_energy)
+    optimized_energy = _energy_diagnostics(ref, sectors, action=action, profile=profile_energy)
     energy_seconds = time.perf_counter() - energy_start
 
     return {
@@ -432,6 +474,65 @@ def run_quartets(
         writer.writerows(out_rows)
 
 
+def run_mixed_pool(
+    input_csv: Path = TABLES_DIR / "n2_mixed_pool_summary.csv",
+    output_csv: Path = TABLES_DIR / "n2_mixed_pool_action_diagnostics.csv",
+) -> None:
+    with input_csv.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    out_rows = []
+    for row in rows:
+        x = float(row["Geometry_Param"])
+        print(f"[action] mixed_pool x={x}", flush=True)
+        ref = load_reference_state("n2", x, cache_dir=str(CACHE_DIR), compute_rdms=False)
+        pool = _parse_pool(row, ref["n_spatial"])
+        thetas = np.asarray(json.loads(row["Thetas_JSON"]), dtype=float)
+        pairs = _parse_pairs(row["Rotation_Pairs_JSON"])
+        diagonals = mixed_pool_diagonals(ref["basis_bitstrings"], pool, ref["n_spatial"])
+        allowed = _exact_symmetry_allowed_indices(ref)
+        sectors = _mixed_pool_sectors(ref, pool, allowed_indices=allowed)
+        out_rows.append(
+            {**row, **_diagnose_diagonals(ref, thetas, diagonals, sectors, pairs=pairs)}
+        )
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with output_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(out_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(out_rows)
+    print(f"[ok] wrote {len(out_rows)} rows to {output_csv}", flush=True)
+
+
+def run_parity_seniority(
+    input_csv: Path = TABLES_DIR / "n2_parity_seniority_summary.csv",
+    output_csv: Path = TABLES_DIR / "n2_parity_seniority_action_diagnostics.csv",
+) -> None:
+    with input_csv.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    out_rows = []
+    for row in rows:
+        x = float(row["Geometry_Param"])
+        print(f"[action] parity_seniority x={x}", flush=True)
+        ref = load_reference_state("n2", x, cache_dir=str(CACHE_DIR), compute_rdms=False)
+        n_spatial = ref["n_spatial"]
+        pool = MixedOperatorPool(singles=tuple(range(n_spatial)), quartets=())
+        thetas = np.asarray(json.loads(row["Thetas_JSON"]), dtype=float)
+        pairs = _parse_pairs(row["Rotation_Pairs_JSON"])
+        diagonals = mixed_pool_diagonals(ref["basis_bitstrings"], pool, n_spatial)
+        allowed = _exact_symmetry_allowed_indices(ref)
+        sectors = _mixed_pool_sectors(ref, pool, allowed_indices=allowed)
+        out_rows.append(
+            {**row, **_diagnose_diagonals(ref, thetas, diagonals, sectors, pairs=pairs)}
+        )
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with output_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(out_rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(out_rows)
+    print(f"[ok] wrote {len(out_rows)} rows to {output_csv}", flush=True)
+
+
 def benchmark_first_quartet() -> None:
     with (TABLES_DIR / "n2_quartet_variance_summary.csv").open(newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
@@ -450,6 +551,37 @@ def benchmark_first_quartet() -> None:
     print(json.dumps({"Elapsed_Seconds": elapsed, **result}, indent=2), flush=True)
 
 
+def benchmark_first_mixed_pool() -> None:
+    with (TABLES_DIR / "n2_mixed_pool_summary.csv").open(newline="", encoding="utf-8") as handle:
+        row = next(csv.DictReader(handle))
+    x = float(row["Geometry_Param"])
+    ref = load_reference_state("n2", x, cache_dir=str(CACHE_DIR), compute_rdms=False)
+    pool = _parse_pool(row, ref["n_spatial"])
+    thetas = np.asarray(json.loads(row["Thetas_JSON"]), dtype=float)
+    pairs = _parse_pairs(row["Rotation_Pairs_JSON"])
+    diagonals = mixed_pool_diagonals(ref["basis_bitstrings"], pool, ref["n_spatial"])
+    allowed = _exact_symmetry_allowed_indices(ref)
+    sectors = _mixed_pool_sectors(ref, pool, allowed_indices=allowed)
+    max_sector = max(len(idxs) for idxs in sectors.values())
+    start = time.perf_counter()
+    result = _diagnose_diagonals(ref, thetas, diagonals, sectors, pairs=pairs)
+    elapsed = time.perf_counter() - start
+    print(
+        json.dumps(
+            {
+                "Geometry_Param": x,
+                "NumSectors": len(sectors),
+                "MaxSectorDim": max_sector,
+                "Elapsed_Seconds": elapsed,
+                **result,
+            },
+            indent=2,
+        ),
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
     run_fixed_abc()
     run_quartets()
+    run_mixed_pool()

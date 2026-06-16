@@ -187,50 +187,114 @@ def decoupled_energy_test(H_dense, sectors_dict):
             best_dim = len(idxs)
 
     return best_E, best_key, best_dim
-def coupled_energy_test(H_dense, sector_data, E_exact=None, tol=1e-8, max_total_vectors=None):
-    """
-    Coupled-energy test:
-      1) collect low-energy eigenvectors from all sectors,
-      2) sort by their block eigen-energies,
-      3) project H into span of first K vectors,
-      4) increase K until projected ground-state energy reaches E_exact within tol.
 
-    If E_exact is None, uses all available vectors.
-    """
-    candidates = []
+
+def _all_sector_eigenpair_candidates(
+    sector_data,
+) -> list[tuple[float, object, np.ndarray, int]]:
+    """All block eigenpairs (energy, sector key, full-space vector, block index)."""
+    candidates: list[tuple[float, object, np.ndarray, int]] = []
     for key, data in sector_data.items():
-        for e, v in zip(data["evals"], data["evecs_full"]):
-            candidates.append((float(e), key, v))
+        for block_index, (energy, vector) in enumerate(
+            zip(data["evals"], data["evecs_full"])
+        ):
+            candidates.append((float(energy), key, vector, int(block_index)))
+    candidates.sort(key=lambda item: item[0])
+    return candidates
 
-    candidates.sort(key=lambda t: t[0])
+
+def _max_coupling_to_span(
+    h_dense: np.ndarray,
+    candidate: np.ndarray,
+    chosen_vecs: list[np.ndarray],
+) -> float:
+    if not chosen_vecs:
+        return float("inf")
+    h_cand = h_dense @ candidate
+    return max(float(abs(np.vdot(chosen, h_cand))) for chosen in chosen_vecs)
+
+
+def _projected_ground_energy(h_dense: np.ndarray, vecs: list[np.ndarray]) -> float:
+    v = np.column_stack(vecs)
+    h_proj = v.conj().T @ h_dense @ v
+    h_proj = 0.5 * (h_proj + h_proj.conj().T)
+    return float(np.linalg.eigvalsh(h_proj)[0])
+
+
+def coupled_energy_test(
+    H_dense,
+    sector_data,
+    E_exact=None,
+    tol=1e-8,
+    max_total_vectors=None,
+    coupling_tol: float = 1e-12,
+    energy_change_tol: float = 1e-12,
+):
+    """
+    Coupled-energy test over sector-block eigenvectors.
+
+    Candidates are all block eigenvectors sorted by block eigenenergy. Greedily
+    add a candidate when it (1) has nonzero Hamiltonian coupling to the current
+    span and (2) improves the projected ground energy toward E_exact (or lowers
+    E_proj when E_exact is unavailable). Multiple passes over the sorted list
+    allow later additions once newly coupled sectors enter the span.
+
+    K is the minimum number of sector eigenvectors whose projected Hamiltonian
+    ground energy matches E_exact within tol.
+    """
+    candidates = _all_sector_eigenpair_candidates(sector_data)
+    if not candidates:
+        return None, 0, False, []
 
     if max_total_vectors is None:
         max_total_vectors = len(candidates)
 
-    chosen_vecs = []
-    chosen_keys = []
-    E_proj = None
-    K_final = 0
+    chosen_vecs: list[np.ndarray] = []
+    chosen_keys: list[tuple[object, int]] = []
+    chosen_indices: set[int] = set()
+    e_proj: float | None = None
     converged = False
 
-    for K in range(1, min(max_total_vectors, len(candidates)) + 1):
-        e, key, v = candidates[K - 1]
-        chosen_vecs.append(v)
-        chosen_keys.append(key)
+    while True:
+        added_this_pass = False
+        for index, (_energy, key, vec, block_index) in enumerate(candidates):
+            if index in chosen_indices:
+                continue
+            if len(chosen_vecs) >= max_total_vectors:
+                break
 
-        V = np.column_stack(chosen_vecs)
-        H_proj = V.conj().T @ H_dense @ V
-        H_proj = 0.5 * (H_proj + H_proj.conj().T)
+            if chosen_vecs:
+                if _max_coupling_to_span(H_dense, vec, chosen_vecs) <= coupling_tol:
+                    continue
+                e_new = _projected_ground_energy(H_dense, [*chosen_vecs, vec])
+                if e_proj is not None:
+                    if E_exact is not None:
+                        if abs(e_new - E_exact) >= abs(e_proj - E_exact) - energy_change_tol:
+                            continue
+                    elif abs(e_new - e_proj) <= energy_change_tol:
+                        continue
+            else:
+                e_new = _projected_ground_energy(H_dense, [vec])
 
-        evals_proj = np.linalg.eigvalsh(H_proj)
-        E_proj = float(evals_proj[0])
-        K_final = K
+            chosen_indices.add(index)
+            chosen_vecs.append(vec)
+            chosen_keys.append((key, block_index))
+            e_proj = e_new
+            added_this_pass = True
 
-        if E_exact is not None and abs(E_proj - E_exact) <= tol:
-            converged = True
+            if E_exact is not None and abs(e_proj - E_exact) <= tol:
+                converged = True
+                break
+
+        if converged:
+            break
+        if not added_this_pass or len(chosen_vecs) >= max_total_vectors:
             break
 
-    return E_proj, K_final, converged, chosen_keys[:K_final]
+    if E_exact is not None and e_proj is not None and abs(e_proj - E_exact) <= tol:
+        converged = True
+
+    return e_proj, len(chosen_vecs), converged, chosen_keys
 def bo_like_coupled_energy_test(H_dense, sector_data):
     """
     BO-like coupled test:
