@@ -1,4 +1,3 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 """Plot fixed/shared/local abc diagnostics and commutator correlations."""
 
 from __future__ import annotations
@@ -10,34 +9,35 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
+from quasi_symmetries.config import IMAGES_DIR, LEGACY_ABC_TABLES_DIR
 
 SYSTEMS = {
     "h4_linear": {
         "label": "H4 linear",
         "x_label": r"H--H spacing $R$ ($\AA$)",
-        "fixed_csv": TABLES_DIR / 'h4_linear_quasi_symmetry_fixed_abc.csv"),
-        "shared_csv": TABLES_DIR / 'h4_linear_quasi_symmetry_shared_abc.csv"),
-        "local_csv": TABLES_DIR / 'h4_linear_quasi_symmetry_local_abc.csv"),
-        "output": IMAGES_DIR / 'quadratics/h4_linear_abc_diagnostics.png"),
-        "scatter_output": IMAGES_DIR / 'quadratics/h4_linear_commutator_scatter.png"),
+        "fixed_csv": LEGACY_ABC_TABLES_DIR / "h4_linear_quasi_symmetry_fixed_abc.csv",
+        "shared_csv": LEGACY_ABC_TABLES_DIR / "h4_linear_quasi_symmetry_shared_abc.csv",
+        "local_csv": LEGACY_ABC_TABLES_DIR / "h4_linear_quasi_symmetry_local_abc.csv",
+        "output": IMAGES_DIR / "quadratics/h4_linear_abc_diagnostics.png",
+        "scatter_output": IMAGES_DIR / "quadratics/h4_linear_commutator_scatter.png",
     },
     "lih": {
         "label": "LiH",
         "x_label": r"Bond length $R$ ($\AA$)",
-        "fixed_csv": TABLES_DIR / 'lih_quasi_symmetry_fixed_abc.csv"),
-        "shared_csv": TABLES_DIR / 'lih_quasi_symmetry_shared_abc.csv"),
-        "local_csv": TABLES_DIR / 'lih_quasi_symmetry_local_abc.csv"),
-        "output": IMAGES_DIR / 'quadratics/lih_abc_diagnostics.png"),
-        "scatter_output": IMAGES_DIR / 'quadratics/lih_commutator_scatter.png"),
+        "fixed_csv": LEGACY_ABC_TABLES_DIR / "lih_quasi_symmetry_fixed_abc.csv",
+        "shared_csv": LEGACY_ABC_TABLES_DIR / "lih_quasi_symmetry_shared_abc.csv",
+        "local_csv": LEGACY_ABC_TABLES_DIR / "lih_quasi_symmetry_local_abc.csv",
+        "output": IMAGES_DIR / "quadratics/lih_abc_diagnostics.png",
+        "scatter_output": IMAGES_DIR / "quadratics/lih_commutator_scatter.png",
     },
     "h2o": {
         "label": "H2O",
         "x_label": r"O--H bond length scale",
-        "fixed_csv": TABLES_DIR / 'h2o_quasi_symmetry_fixed_abc.csv"),
-        "shared_csv": TABLES_DIR / 'h2o_quasi_symmetry_shared_abc.csv"),
-        "local_csv": TABLES_DIR / 'h2o_quasi_symmetry_local_abc.csv"),
-        "output": IMAGES_DIR / 'quadratics/h2o_abc_diagnostics.png"),
-        "scatter_output": IMAGES_DIR / 'quadratics/h2o_commutator_scatter.png"),
+        "fixed_csv": LEGACY_ABC_TABLES_DIR / "h2o_quasi_symmetry_fixed_abc.csv",
+        "shared_csv": LEGACY_ABC_TABLES_DIR / "h2o_quasi_symmetry_shared_abc.csv",
+        "local_csv": LEGACY_ABC_TABLES_DIR / "h2o_quasi_symmetry_local_abc.csv",
+        "output": IMAGES_DIR / "quadratics/h2o_abc_diagnostics.png",
+        "scatter_output": IMAGES_DIR / "quadratics/h2o_commutator_scatter.png",
     },
 }
 

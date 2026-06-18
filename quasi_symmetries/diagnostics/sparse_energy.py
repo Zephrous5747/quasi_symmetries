@@ -7,10 +7,14 @@ import time
 from typing import Any, Iterable
 
 import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+
+from quasi_symmetries.config import SPARSE_ENERGY_MAX_WORKERS, STATES_PER_SECTOR
 
 
 def _default_workers() -> int:
-    return max(1, min(4, (os.cpu_count() or 1)))
+    return SPARSE_ENERGY_MAX_WORKERS
 
 
 class SparseSubspaceHamiltonian:
@@ -29,14 +33,27 @@ class SparseSubspaceHamiltonian:
         return 0.5 * (block + block.conj().T)
 
 
+def _sector_eigenpairs(blk: np.ndarray, states_per_sector: int | None) -> tuple[np.ndarray, np.ndarray]:
+    dim = blk.shape[0]
+    k = dim if states_per_sector is None else min(int(states_per_sector), dim)
+    if k <= dim - 2 and k < dim:
+        evals, evecs = spla.eigsh(blk, k=k, which="SA")
+        order = np.argsort(evals)
+        return np.asarray(evals[order], dtype=float), np.asarray(evecs[:, order], dtype=np.complex128)
+    evals, evecs = np.linalg.eigh(blk)
+    return np.asarray(evals, dtype=float), np.asarray(evecs, dtype=np.complex128)
+
+
 def _diagonalize_one_sector(
     h_op: Any,
     key: object,
     idxs: list[int],
     dim: int,
+    *,
+    states_per_sector: int | None = STATES_PER_SECTOR,
 ) -> tuple[object, dict[str, Any]]:
     blk = h_op.sector_block_dense(idxs)
-    evals, evecs = np.linalg.eigh(blk)
+    evals, evecs = _sector_eigenpairs(blk, states_per_sector)
     idxs_arr = np.asarray(idxs, dtype=int)
     evecs_full = []
     for j in range(evecs.shape[1]):
@@ -47,14 +64,18 @@ def _diagonalize_one_sector(
 
 
 def _identity_sector_worker(args: tuple) -> tuple[object, dict[str, Any]]:
-    key, idxs, dim = args
-    import scipy.sparse as sp
-
+    key, idxs, dim, states_per_sector = args
     global _IDENTITY_H_SUB_PAYLOAD
     h_data, h_indices, h_indptr, shape = _IDENTITY_H_SUB_PAYLOAD
     h_sub = sp.csc_matrix((h_data, h_indices, h_indptr), shape=shape)
     h_op = SparseSubspaceHamiltonian(h_sub)
-    return _diagonalize_one_sector(h_op, key, idxs, dim)
+    return _diagonalize_one_sector(
+        h_op,
+        key,
+        idxs,
+        dim,
+        states_per_sector=states_per_sector,
+    )
 
 
 _IDENTITY_H_SUB_PAYLOAD: tuple | None = None
@@ -74,6 +95,7 @@ def _diagonalize_sector_blocks_lazy(
     sectors_dict: dict,
     *,
     max_workers: int | None = None,
+    states_per_sector: int | None = STATES_PER_SECTOR,
 ) -> dict:
     dim = h_op.shape[0]
     items = list(sectors_dict.items())
@@ -86,7 +108,7 @@ def _diagonalize_sector_blocks_lazy(
 
         h_sub = h_op.h_sub
         payload = (h_sub.data, h_sub.indices, h_sub.indptr, h_sub.shape)
-        tasks = [(key, idxs, dim) for key, idxs in items]
+        tasks = [(key, idxs, dim, states_per_sector) for key, idxs in items]
         sector_data: dict = {}
         with ProcessPoolExecutor(
             max_workers=min(workers, len(items)),
@@ -99,9 +121,127 @@ def _diagonalize_sector_blocks_lazy(
 
     sector_data = {}
     for key, idxs in items:
-        _, data = _diagonalize_one_sector(h_op, key, idxs, dim)
+        _, data = _diagonalize_one_sector(
+            h_op,
+            key,
+            idxs,
+            dim,
+            states_per_sector=states_per_sector,
+        )
         sector_data[key] = data
     return sector_data
+
+
+_ROTATED_H_PAYLOAD: tuple | None = None
+
+
+def _init_rotated_h_worker(payload: tuple) -> None:
+    global _ROTATED_H_PAYLOAD
+    _ROTATED_H_PAYLOAD = payload
+
+
+def _rotated_h_column_worker(col_index: int) -> tuple[int, np.ndarray]:
+    global _ROTATED_H_PAYLOAD
+    if _ROTATED_H_PAYLOAD is None:
+        raise RuntimeError("Rotated-H worker payload is not initialized.")
+    h_data, h_indices, h_indptr, shape, u_spatial, basis_bitstrings, n_spatial = _ROTATED_H_PAYLOAD
+    from quasi_symmetries.diagnostics.n2_action import OrbitalRotationAction, RotatedHamiltonian
+
+    h_sub = sp.csc_matrix((h_data, h_indices, h_indptr), shape=shape)
+    action = OrbitalRotationAction(
+        np.asarray(u_spatial, dtype=np.complex128),
+        list(basis_bitstrings),
+        int(n_spatial),
+    )
+    rot_h = RotatedHamiltonian(h_sub, action)
+    dim = int(shape[0])
+    vector = np.zeros(dim, dtype=np.complex128)
+    vector[col_index] = 1.0
+    return col_index, rot_h.dot(vector)
+
+
+def _rotated_h_column_batch_worker(col_indices: list[int]) -> list[tuple[int, np.ndarray]]:
+    return [_rotated_h_column_worker(col_index) for col_index in col_indices]
+
+
+def build_rotated_h_sub_csc(
+    h_sub: sp.spmatrix,
+    action: Any,
+    *,
+    max_workers: int | None = None,
+    profile: bool = False,
+) -> sp.csc_matrix:
+    """Build H_rot = R^dagger H R as CSC by applying the rotation once per column."""
+    if not hasattr(action, "u_spatial"):
+        raise ValueError(
+            "build_rotated_h_sub_csc requires an OrbitalRotationAction with "
+            "u_spatial, basis_bitstrings, and n_spatial attributes."
+        )
+
+    if not isinstance(h_sub, sp.csc_matrix):
+        h_sub = h_sub.tocsc()
+    dim = h_sub.shape[0]
+    workers = max_workers if max_workers is not None else _default_workers()
+    u_spatial = action.u_spatial
+    basis_bitstrings = action.basis_bitstrings
+    n_spatial = action.n_spatial
+
+    t0 = time.perf_counter()
+    payload = (
+        h_sub.data,
+        h_sub.indices,
+        h_sub.indptr,
+        h_sub.shape,
+        np.asarray(u_spatial, dtype=np.complex128),
+        [int(b) for b in basis_bitstrings],
+        int(n_spatial),
+    )
+    columns: list[np.ndarray | None] = [None] * dim
+    if workers > 1:
+        from concurrent.futures import ProcessPoolExecutor
+
+        chunk_size = max(1, (dim + workers - 1) // workers)
+        batches = [
+            list(range(start, min(start + chunk_size, dim)))
+            for start in range(0, dim, chunk_size)
+        ]
+        with ProcessPoolExecutor(
+            max_workers=min(workers, len(batches)),
+            initializer=_init_rotated_h_worker,
+            initargs=(payload,),
+        ) as executor:
+            for batch in executor.map(_rotated_h_column_batch_worker, batches):
+                for col_index, column in batch:
+                    columns[col_index] = column
+    else:
+        global _ROTATED_H_PAYLOAD
+        _ROTATED_H_PAYLOAD = payload
+        for col_index in range(dim):
+            _, column = _rotated_h_column_worker(col_index)
+            columns[col_index] = column
+        _ROTATED_H_PAYLOAD = None
+
+    data: list[complex] = []
+    rows: list[int] = []
+    cols: list[int] = []
+    for col_index, column in enumerate(columns):
+        if column is None:
+            continue
+        for row_index, value in enumerate(column):
+            if value != 0:
+                rows.append(row_index)
+                cols.append(col_index)
+                data.append(value)
+    h_rot = sp.csc_matrix((data, (rows, cols)), shape=(dim, dim), dtype=np.complex128)
+    h_rot = 0.5 * (h_rot + h_rot.conj().T).tocsc()
+    elapsed = time.perf_counter() - t0
+    if profile:
+        print(
+            f"  [profile] build_rotated_h_sub_csc dim={dim} nnz={h_sub.nnz}->{h_rot.nnz} "
+            f"in {elapsed:.1f}s",
+            flush=True,
+        )
+    return h_rot
 
 
 def _all_sector_eigenpair_candidates(
@@ -139,6 +279,7 @@ def decoupled_energy_lazy(
     *,
     sector_data: dict | None = None,
     max_workers: int | None = None,
+    states_per_sector: int | None = STATES_PER_SECTOR,
 ) -> tuple[float, object, int]:
     """Decoupled minimum energy across symmetry sectors (block-wise)."""
     if sector_data is not None:
@@ -150,7 +291,7 @@ def decoupled_energy_lazy(
 
     for key, idxs in sectors_dict.items():
         blk = h_op.sector_block_dense(idxs)
-        e0 = float(np.linalg.eigvalsh(blk)[0])
+        e0 = float(_sector_eigenpairs(blk, states_per_sector)[0][0])
         if best_E is None or e0 < best_E:
             best_E = e0
             best_key = key
@@ -170,6 +311,7 @@ def coupled_energy_lazy(
     *,
     sector_data: dict | None = None,
     max_workers: int | None = None,
+    states_per_sector: int | None = STATES_PER_SECTOR,
 ) -> tuple[float, int, bool, list]:
     """Coupled-energy test using lazy sector block diagonalization."""
     if sector_data is None:
@@ -177,6 +319,7 @@ def coupled_energy_lazy(
             h_op,
             sectors_dict,
             max_workers=max_workers,
+            states_per_sector=states_per_sector,
         )
     candidates = _all_sector_eigenpair_candidates(sector_data)
     if not candidates:
@@ -263,6 +406,7 @@ def energy_sector_diagnostics_sparse(
     tol: float = 1e-3,
     lazy: bool = False,
     max_workers: int | None = None,
+    states_per_sector: int | None = STATES_PER_SECTOR,
     profile: bool = False,
 ) -> dict[str, float | int | bool]:
     """Energy indicators from lazy sector blocks."""
@@ -271,7 +415,12 @@ def energy_sector_diagnostics_sparse(
     workers = max_workers if max_workers is not None else _default_workers()
 
     t0 = time.perf_counter()
-    sector_data = _diagonalize_sector_blocks_lazy(h_op, sectors, max_workers=workers)
+    sector_data = _diagonalize_sector_blocks_lazy(
+        h_op,
+        sectors,
+        max_workers=workers,
+        states_per_sector=states_per_sector,
+    )
     timings["diagonalize_seconds"] = time.perf_counter() - t0
     if profile:
         print(
@@ -317,6 +466,12 @@ def energy_sector_diagnostics_sparse(
         print(
             f"  [profile] coupled K={k_coupled} converged={converged} in "
             f"{timings['coupled_seconds']:.1f}s",
+            flush=True,
+        )
+    if not converged and profile:
+        print(
+            f"  [warn] K did not converge within tol={tol}; "
+            f"consider increasing STATES_PER_SECTOR (currently {states_per_sector})",
             flush=True,
         )
 

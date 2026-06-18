@@ -376,8 +376,8 @@ def optimize_seniority_protocol(
         ANGLE_INIT_SCALE,
         build_U_from_thetas,
         compute_spin_rdms_from_subspace_state,
-        variance_restricted,
     )
+    from quasi_symmetries_abc.optimization.variance import variance_restricted
 
     seniority_x0, pairs = seniority_optimization_params(n_spatial)
 

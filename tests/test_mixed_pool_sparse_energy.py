@@ -41,7 +41,13 @@ class MixedPoolSparseEnergyTests(unittest.TestCase):
         e_dec, _, _ = decoupled_energy_lazy(h_op, sectors)
         self.assertAlmostEqual(e_dec, e_exact, places=10)
 
-        result = energy_sector_diagnostics_sparse(h_op, sectors, e_exact, tol=1e-3)
+        result = energy_sector_diagnostics_sparse(
+            h_op,
+            sectors,
+            e_exact,
+            tol=1e-3,
+            states_per_sector=2,
+        )
         self.assertEqual(result["Kcoupled"], 1)
         self.assertTrue(result["Coupled_Converged"])
 

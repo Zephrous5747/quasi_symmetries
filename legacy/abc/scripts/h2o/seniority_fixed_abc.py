@@ -7,11 +7,12 @@ from pathlib import Path
 
 import numpy as np
 
-from quasi_symmetries.workflows import abc as optimization_workflow as ow
+from quasi_symmetries.config import LEGACY_ABC_OPT_RESULTS_DIR
+from quasi_symmetries_abc.workflows import abc as ow
 
 
 def main() -> None:
-    csv_path = OPT_RESULTS_DIR / 'h2o_quasi_symmetry_fixed_abc.csv")
+    csv_path = LEGACY_ABC_OPT_RESULTS_DIR / "h2o_quasi_symmetry_fixed_abc.csv"
     print("[h2o-seniority] starting fixed_abc scan", flush=True)
     rows = ow.main(
         workflow=ow.WORKFLOW_FIXED_ABC,
@@ -20,7 +21,7 @@ def main() -> None:
     )
     print(f"[h2o-seniority] completed {len(rows)} geometries", flush=True)
 
-    out_dir = OPT_RESULTS_DIR / 'h2o_seniority_rotations")
+    out_dir = LEGACY_ABC_OPT_RESULTS_DIR / "h2o_seniority_rotations"
     out_dir.mkdir(parents=True, exist_ok=True)
     for row in rows:
         x = float(row["Geometry_Param"])

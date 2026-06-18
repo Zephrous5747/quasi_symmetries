@@ -3,6 +3,7 @@ scipy
 matplotlib
 openfermion
 h5py
+tqdm
 
 # Optional: Hamiltonian generation and PySCF-dependent tests
 # pyscf

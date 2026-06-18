@@ -15,7 +15,7 @@ from quasi_symmetries.config import (
     RANDOM_SEED,
 )
 from quasi_symmetries.optimization.rotations import build_U_from_thetas, pair_list_for_n
-from quasi_symmetries.optimization.variance import OptLog
+from quasi_symmetries_abc.optimization.variance import OptLog
 from quasi_symmetries.config import EVAL_STATE_SPECIFIC_COMMUTATIVITY
 from quasi_symmetries.diagnostics.energy_sectors import (
     analyze_single_operator_leakage,

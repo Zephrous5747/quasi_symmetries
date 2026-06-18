@@ -1,4 +1,3 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 """Plot H4 linear diagnostics comparing canonical, fixed-abc, and shared-abc runs."""
 
 from __future__ import annotations
@@ -9,6 +8,8 @@ import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+
+from quasi_symmetries.config import IMAGES_DIR, LEGACY_ABC_TABLES_DIR
 
 
 SERIES_STYLES = {
@@ -129,19 +130,19 @@ def main() -> None:
     parser.add_argument(
         "--fixed-csv",
         type=Path,
-        default=TABLES_DIR / 'h4_linear_quasi_symmetry_fixed_abc.csv"),
+        default=LEGACY_ABC_TABLES_DIR / "h4_linear_quasi_symmetry_fixed_abc.csv",
         help="Fixed-abc H4 linear summary CSV.",
     )
     parser.add_argument(
         "--shared-csv",
         type=Path,
-        default=TABLES_DIR / 'h4_linear_quasi_symmetry_shared_abc.csv"),
+        default=LEGACY_ABC_TABLES_DIR / "h4_linear_quasi_symmetry_shared_abc.csv",
         help="Shared-abc H4 linear summary CSV.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=IMAGES_DIR / 'quartets/h4_linear_abc_diagnostics.png"),
+        default=IMAGES_DIR / "quartets/h4_linear_abc_diagnostics.png",
         help="Output figure path.",
     )
     args = parser.parse_args()

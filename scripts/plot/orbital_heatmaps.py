@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import IMAGES_DIR, LEGACY_ABC_OPT_RESULTS_DIR, LEGACY_ABC_TABLES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 
 import argparse
 import csv
@@ -60,10 +60,13 @@ def _geometry_tag(x: float) -> str:
 
 def _default_paths(molecule: str) -> tuple[Path, Path]:
     mol = molecule.lower()
-    seniority = Path("opt_results") / f"{mol}_quasi_symmetry_fixed_abc.csv"
-    if not seniority.is_file():
-        seniority = Path("tables") / f"{mol}_quasi_symmetry_fixed_abc.csv"
-    quartet = Path("tables") / f"{mol}_quartet_baseline_summary.csv"
+    if mol == "h2o":
+        seniority = TABLES_DIR / "h2o_parity_seniority_diagnostics.csv"
+    elif mol == "n2":
+        seniority = TABLES_DIR / "n2_parity_seniority_summary.csv"
+    else:
+        seniority = LEGACY_ABC_TABLES_DIR / f"{mol}_quasi_symmetry_fixed_abc.csv"
+    quartet = TABLES_DIR / f"{mol}_quartet_baseline_summary.csv"
     return seniority, quartet
 
 
@@ -95,7 +98,10 @@ def _load_seniority_unitary(
 ) -> np.ndarray:
     if seniority_npz is not None and seniority_npz.is_file():
         return np.asarray(np.load(seniority_npz)["u_spatial"], dtype=np.complex128)
-    return _u_from_csv_row(_load_csv_row(seniority_csv, x))
+    row = _load_csv_row(seniority_csv, x)
+    if "U_Spatial" in row:
+        return _u_from_csv_row(row)
+    return _u_from_thetas_row(row, n_spatial)
 
 
 def _parse_quartet_edges(value: str) -> list[tuple[int, int]]:
@@ -467,7 +473,7 @@ def process_system(
 
     if seniority_npz is None:
         candidate = (
-            Path("opt_results")
+            LEGACY_ABC_OPT_RESULTS_DIR
             / f"{job.molecule}_seniority_rotations"
             / f"{job.molecule}_{_geometry_tag(job.x)}.npz"
         )

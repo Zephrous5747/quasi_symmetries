@@ -7,9 +7,10 @@ Computational research code for studying quasi-symmetries via parity-parent Hami
 ```
 quasi_symmetries/     Library: theory, hamiltonians, optimization, workflows
 scripts/              CLI entry points (runners, plots, analysis)
+legacy/abc/           Archived fixed/shared/local ABC workflows and results
 tests/                unittest suite
 hamiltonian_cache/    Precomputed HDF5 Hamiltonians
-tables/               CSV scan summaries
+tables/               CSV scan summaries (quartets, parity seniority, mixed pools)
 opt_results/          Detailed optimization outputs
 images/               Generated plots
 ```
@@ -31,6 +32,7 @@ From the repo root, set `PYTHONPATH` to the repo root:
 $env:PYTHONPATH = "."
 python scripts/run_tests.py -v
 python scripts/generate_hamiltonians.py --molecule lih
+python scripts/run_quartets.py
 python scripts/h2o/mixed_pool_scan.py
 ```
 
@@ -42,6 +44,8 @@ python scripts/run_tests.py -v
 
 ## Workflows
 
-- **ABC optimization** (`quasi_symmetries.workflows.abc`): `fixed_abc`, `shared_abc`, `local_abc`
-- **Quartet baselines** (`quasi_symmetries.workflows.quartet`)
-- **Mixed pools** (H₂O): `scripts/h2o/mixed_pool_scan.py`
+- **Quartet baselines** (`quasi_symmetries.workflows.quartet`, `scripts/run_quartets.py`)
+- **Parity seniority** (`scripts/h2o/continue_h2o_operator_optimization.py`, `scripts/n2/parity_optimization_heatmaps.py`)
+- **Mixed pools** (H₂O/N₂): `scripts/h2o/mixed_pool_scan.py`, `scripts/n2/parity_optimization_heatmaps.py`
+
+Archived **fixed/shared/local ABC** workflows live under [`legacy/abc/`](legacy/abc/README.md).

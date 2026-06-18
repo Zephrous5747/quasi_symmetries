@@ -169,7 +169,7 @@ def main() -> None:
     parser.add_argument(
         "--seniority-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_quasi_symmetry_fixed_abc.csv",
+        default=TABLES_DIR / "h2o_parity_seniority_diagnostics.csv",
     )
     parser.add_argument("--n-restarts", type=int, default=1)
     parser.add_argument("--max-workers", type=int, default=3)

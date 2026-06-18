@@ -7,6 +7,7 @@ import unittest
 import numpy as np
 
 from quasi_symmetries.diagnostics.n2_action import OrbitalRotationAction
+from quasi_symmetries.diagnostics.sparse_energy import build_rotated_h_sub_csc
 from quasi_symmetries.optimization import build_U_from_thetas, pair_list_for_n
 from quasi_symmetries.theory.parity_parent import rotate_h_sub_dense
 from quasi_symmetries.optimization.quartet import orbital_rotation_representation_R_fast
@@ -89,6 +90,23 @@ class _RotationEquivalenceTests:
 
             fro_diff = float(np.linalg.norm(r_fast.conj().T @ self.h_dense @ r_fast - h_rot_dense))
             self.assertLess(fro_diff, 1e-9)
+
+    def test_build_rotated_h_sub_csc_matches_dense_formula(self) -> None:
+        for u in self._unitaries():
+            action = OrbitalRotationAction(u, self.ref["basis_bitstrings"], self.n_spatial)
+            h_rot_dense = rotate_h_sub_dense(
+                u,
+                self.h_dense,
+                self.ref["basis_bitstrings"],
+                self.n_spatial,
+            )
+            h_rot_sparse = build_rotated_h_sub_csc(
+                self.ref["h_sub"],
+                action,
+                max_workers=1,
+            ).toarray()
+            fro_diff = float(np.linalg.norm(h_rot_sparse - h_rot_dense))
+            self.assertLess(fro_diff, 1e-8)
 
 
 class TestOrbitalRotationEquivalenceH4(_RotationEquivalenceTests, unittest.TestCase):

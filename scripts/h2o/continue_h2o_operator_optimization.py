@@ -358,7 +358,10 @@ def main() -> None:
     mixed_csv = args.mixed_diagnostics_csv if mixed_rows else args.mixed_diagnostics_csv
     seniority_csv = args.seniority_diagnostics_csv
     if not seniority_rows and not seniority_csv.is_file():
-        seniority_csv = TABLES_DIR / "h2o_quasi_symmetry_fixed_abc.csv"
+        raise FileNotFoundError(
+            f"Parity seniority diagnostics not found: {seniority_csv}. "
+            "Run with --skip-seniority or provide an existing CSV."
+        )
 
     plot_h2o_operator_diagnostics(
         seniority_csv=seniority_csv,

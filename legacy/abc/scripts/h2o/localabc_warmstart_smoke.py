@@ -1,4 +1,3 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 """Debug smoke: H2O quartet optimization from local-ABC angles only."""
 
 from __future__ import annotations
@@ -10,12 +9,42 @@ from pathlib import Path
 
 import numpy as np
 
-import quartet_optimization_utils as qutils
-from quasi_symmetries.workflows.quartet import _load_ref
+from quasi_symmetries.config import LEGACY_ABC_OPT_RESULTS_DIR, LEGACY_ABC_TABLES_DIR
+from quasi_symmetries.hamiltonian.cache import load_reference_state
+from quasi_symmetries.optimization import (
+    build_U_from_thetas,
+    closed_shell_hf_bitstring,
+    pair_list_for_n,
+    popcount,
+    solve_cisd_state,
+)
+from quasi_symmetries.optimization.quartet import (
+    balanced_tree_plus_edges,
+    matching_edges,
+    quartet_cost_for_u,
+    ring_edges,
+    run_fixed_topology_baseline,
+    run_matching_greedy_baseline,
+)
+
+
+def _load_ref(molecule: str, x: float, cache_dir: str) -> dict:
+    return load_reference_state(
+        molecule,
+        x,
+        cache_dir=cache_dir,
+        load_hamiltonian=False,
+        load_full_hamiltonian=False,
+        compute_rdms=False,
+        popcount_fn=popcount,
+        solve_cisd_fn=solve_cisd_state,
+        hf_bitstring_fn=closed_shell_hf_bitstring,
+        hoh_angle_deg=104.5,
+    )
 
 
 def main() -> None:
-    source = TABLES_DIR / 'h2o_quasi_symmetry_local_abc.csv")
+    source = LEGACY_ABC_TABLES_DIR / "h2o_quasi_symmetry_local_abc.csv"
     with source.open(newline="", encoding="utf-8") as handle:
         local_rows = list(csv.DictReader(handle))
     row = next(item for item in local_rows if abs(float(item["Geometry_Param"]) - 0.958) < 1e-12)
@@ -25,14 +54,14 @@ def main() -> None:
     n_spatial = ref["n_spatial"]
     v_sub = ref["v_sub"]
     basis_bitstrings = ref["basis_bitstrings"]
-    pairs = qutils.pair_list_for_n(n_spatial)
-    u_initial = qutils.build_U_from_thetas(n_spatial, thetas, pairs)
+    pairs = pair_list_for_n(n_spatial)
+    u_initial = build_U_from_thetas(n_spatial, thetas, pairs)
 
     jobs = [
         (
             "greedy",
-            qutils.matching_edges(n_spatial),
-            lambda: qutils.run_matching_greedy_baseline(
+            matching_edges(n_spatial),
+            lambda: run_matching_greedy_baseline(
                 v_sub,
                 basis_bitstrings,
                 n_spatial,
@@ -46,8 +75,8 @@ def main() -> None:
         ),
         (
             "ring",
-            qutils.ring_edges(n_spatial),
-            lambda: qutils.run_fixed_topology_baseline(
+            ring_edges(n_spatial),
+            lambda: run_fixed_topology_baseline(
                 v_sub,
                 basis_bitstrings,
                 n_spatial,
@@ -61,8 +90,8 @@ def main() -> None:
         ),
         (
             "balanced_tree",
-            qutils.balanced_tree_plus_edges(n_spatial),
-            lambda: qutils.run_fixed_topology_baseline(
+            balanced_tree_plus_edges(n_spatial),
+            lambda: run_fixed_topology_baseline(
                 v_sub,
                 basis_bitstrings,
                 n_spatial,
@@ -78,7 +107,7 @@ def main() -> None:
 
     out_rows = []
     for baseline, initial_edges, run in jobs:
-        initial_cost = qutils.quartet_cost_for_u(v_sub, basis_bitstrings, u_initial, n_spatial, initial_edges)
+        initial_cost = quartet_cost_for_u(v_sub, basis_bitstrings, u_initial, n_spatial, initial_edges)
         start = time.perf_counter()
         result = run()
         elapsed = time.perf_counter() - start
@@ -97,8 +126,8 @@ def main() -> None:
         out_rows.append(out)
         print("[h2o-localabc-smoke] " + json.dumps(out), flush=True)
 
-    out_path = OPT_RESULTS_DIR / 'h2o_quartet_localabc_warmstart_smoke.csv")
-    out_path.parent.mkdir(exist_ok=True)
+    out_path = LEGACY_ABC_OPT_RESULTS_DIR / "h2o_quartet_localabc_warmstart_smoke.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(out_rows[0]))
         writer.writeheader()

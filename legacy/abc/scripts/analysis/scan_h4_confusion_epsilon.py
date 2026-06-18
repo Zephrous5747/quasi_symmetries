@@ -9,10 +9,6 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from quasi_symmetries.optimization import build_U_from_thetas, pair_list_for_n
 from quasi_symmetries.optimization.quartet import quartet_cost_for_u
 from tests.helpers import (
@@ -72,7 +68,8 @@ def pre_confusion_metrics(
     a, b, c = STANDARD_ABC
     if parent_protocol == "seniority":
         from quasi_symmetries.optimization.quartet import rotate_state_to_orbital_frame
-        from quasi_symmetries.optimization import compute_spin_rdms_from_subspace_state, variance_restricted
+        from quasi_symmetries.optimization import compute_spin_rdms_from_subspace_state
+        from quasi_symmetries_abc.optimization.variance import variance_restricted
 
         pairs = pair_list_for_n(n_spatial)
         m = len(pairs)

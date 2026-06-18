@@ -11,9 +11,9 @@ import numpy as np
 from scipy.optimize import minimize
 
 from quasi_symmetries.config import CACHE_DIR as DEFAULT_CACHE_DIR
-from quasi_symmetries.config import OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import LEGACY_ABC_OPT_RESULTS_DIR, LEGACY_ABC_TABLES_DIR
 from quasi_symmetries.hamiltonian.cache import load_reference_state
-from quasi_symmetries.optimization import abc as local_utils
+from quasi_symmetries_abc.optimization import local_abc as local_utils
 from quasi_symmetries.hamiltonian.geometry import default_grid_for_molecule as _default_grid_for_molecule
 from quasi_symmetries.optimization import (
     ANGLE_INIT_SCALE,
@@ -33,12 +33,14 @@ from quasi_symmetries.optimization import (
     diagonalize_sector_blocks,
     EnergySectorDiagnostics,
     energy_sector_diagnostics_symmetry_restricted,
-    optimize_variance_restricted,
     orbital_rotation_representation_R,
     pair_list_for_n,
     popcount,
     shannon_block_decomposition,
     solve_cisd_state,
+)
+from quasi_symmetries_abc.optimization.variance import (
+    optimize_variance_restricted,
     variance_restricted,
 )
 from quasi_symmetries.optimization.rotations import symmetry_blocked_pair_list
@@ -169,7 +171,7 @@ def _default_csv_name(molecule: str, workflow: str) -> str:
 
 
 def _default_opt_results_path(molecule: str, workflow: str) -> str:
-    return str(OPT_RESULTS_DIR / _default_csv_name(molecule, workflow))
+    return str(LEGACY_ABC_OPT_RESULTS_DIR / _default_csv_name(molecule, workflow))
 
 
 def _to_jsonable(value: Any) -> Any:

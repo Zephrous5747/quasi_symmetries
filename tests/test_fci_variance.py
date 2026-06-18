@@ -8,8 +8,6 @@ import numpy as np
 from scipy.optimize import minimize
 
 from quasi_symmetries.optimization import (
-    OP_COEF_TOL,
-    analyze_individual_symmetry_operators_with_leakage_subspace,
     build_U_from_thetas,
     pair_list_for_n,
 )
@@ -27,7 +25,6 @@ from tests.helpers import (
     N_RESTARTS,
     OPT_MAXFEV,
     OPT_MAXITER,
-    STANDARD_ABC,
     load_h4_reference,
     load_lih_reference,
     random_unitary,
@@ -137,24 +134,6 @@ class _FciVarianceTests:
             maxiter=self.maxiter,
         )
         self.assertLessEqual(best["cost"], initial + 1e-10)
-
-    def test_fci_fixed_abc_commutators_positive_at_identity(self) -> None:
-        a, b, c = STANDARD_ABC
-        result = analyze_individual_symmetry_operators_with_leakage_subspace(
-            self.ref["h_sub"],
-            self.psi,
-            self.ref["basis_bitstrings"],
-            np.eye(self.n_spatial),
-            self.n_spatial,
-            self.ref["n_qubits"],
-            a,
-            b,
-            c,
-            label=self.label,
-            tol=OP_COEF_TOL,
-            check_eigenstate=False,
-        )
-        self.assertGreater(float(result["sum_comm_sq"]), 1e-8)
 
 
 class TestFciVarianceH4(_FciVarianceTests, unittest.TestCase):

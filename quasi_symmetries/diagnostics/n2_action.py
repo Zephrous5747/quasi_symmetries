@@ -18,13 +18,14 @@ from typing import Iterable
 
 import numpy as np
 
-from quasi_symmetries.config import CACHE_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, LEGACY_ABC_TABLES_DIR, TABLES_DIR
 from quasi_symmetries.diagnostics.mixed_pool import (
     mixed_pool_diagonals,
     mixed_pool_sectors,
 )
 from quasi_symmetries.diagnostics.sparse_energy import (
     SparseSubspaceHamiltonian,
+    build_rotated_h_sub_csc,
     energy_sector_diagnostics_sparse,
 )
 from quasi_symmetries.fermion.bitstring import mode_is_occupied
@@ -65,6 +66,9 @@ class OrbitalRotationAction:
     """Apply R and R^dagger in the fixed-N determinant basis using cached blocks."""
 
     def __init__(self, u_spatial: np.ndarray, basis_bitstrings: list[int], n_spatial: int):
+        self.u_spatial = np.asarray(u_spatial, dtype=np.complex128)
+        self.basis_bitstrings = list(basis_bitstrings)
+        self.n_spatial = int(n_spatial)
         self.dim = len(basis_bitstrings)
         basis_tuple = tuple(int(bitstring) for bitstring in basis_bitstrings)
         (
@@ -299,22 +303,35 @@ def _energy_diagnostics(
     *,
     energy_tol: float = 1e-3,
     profile: bool = False,
+    max_workers: int | None = None,
 ) -> dict[str, float | int | bool]:
     h_sub = ref["h_sub"]
     energy_fci = float(ref["energy_fci"])
-    lazy = action is not None
     if action is None:
         h_op = SparseSubspaceHamiltonian(h_sub)
     else:
-        h_op = RotatedHamiltonian(h_sub, action)
-    return energy_sector_diagnostics_sparse(
+        rotate_start = time.perf_counter()
+        h_rot = build_rotated_h_sub_csc(
+            h_sub,
+            action,
+            max_workers=max_workers,
+            profile=profile,
+        )
+        rotate_seconds = time.perf_counter() - rotate_start
+        h_op = SparseSubspaceHamiltonian(h_rot)
+    result = energy_sector_diagnostics_sparse(
         h_op,
         sectors,
         energy_fci,
         tol=energy_tol,
-        lazy=lazy,
+        max_workers=max_workers,
         profile=profile,
     )
+    if action is not None:
+        profile_data = result.get("_profile")
+        if isinstance(profile_data, dict):
+            profile_data["rotate_seconds"] = rotate_seconds
+    return result
 
 
 def _seniority_diagonal(
@@ -383,9 +400,28 @@ def _diagnose_diagonals(
 
     energy_start = time.perf_counter()
     profile_energy = os.environ.get("SPARSE_ENERGY_PROFILE", "").lower() in {"1", "true", "yes"}
+    x_geom = float(ref.get("geometry_param", ref.get("x", float("nan"))))
     identity_energy = _energy_diagnostics(ref, sectors, action=None, profile=profile_energy)
+    if profile_energy:
+        id_profile = identity_energy.get("_profile", {})
+        print(
+            f"  [energy] diagonalize_id={id_profile.get('diagonalize_seconds', float('nan')):.1f}s "
+            f"K_id={identity_energy.get('Kcoupled')} "
+            f"Edec_id={identity_energy.get('Edec'):+.8f}",
+            flush=True,
+        )
     optimized_energy = _energy_diagnostics(ref, sectors, action=action, profile=profile_energy)
     energy_seconds = time.perf_counter() - energy_start
+    if profile_energy:
+        opt_profile = optimized_energy.get("_profile", {})
+        print(
+            f"  [energy] rotate_h={opt_profile.get('rotate_seconds', float('nan')):.1f}s "
+            f"diagonalize_opt={opt_profile.get('diagonalize_seconds', float('nan')):.1f}s "
+            f"K_opt={optimized_energy.get('Kcoupled')} "
+            f"Edec_opt={optimized_energy.get('Edec'):+.8f} "
+            f"total_energy={energy_seconds:.1f}s",
+            flush=True,
+        )
 
     return {
         "Build_Seconds": build_seconds,
@@ -411,8 +447,8 @@ def _diagnose_diagonals(
 
 
 def run_fixed_abc(
-    input_csv: Path = TABLES_DIR / "n2_quasi_symmetry_fixed_abc.csv",
-    output_csv: Path = TABLES_DIR / "n2_fixed_abc_action_diagnostics.csv",
+    input_csv: Path = LEGACY_ABC_TABLES_DIR / "n2_quasi_symmetry_fixed_abc.csv",
+    output_csv: Path = LEGACY_ABC_TABLES_DIR / "n2_fixed_abc_action_diagnostics.csv",
 ) -> None:
     with input_csv.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
@@ -503,6 +539,26 @@ def run_mixed_pool(
     print(f"[ok] wrote {len(out_rows)} rows to {output_csv}", flush=True)
 
 
+def _diagnose_one_geometry(
+    row: dict,
+    *,
+    profile: bool = False,
+) -> dict[str, object]:
+    """Run parity-seniority action diagnostics for one N2 geometry row."""
+    x = float(row["Geometry_Param"])
+    if profile:
+        os.environ["SPARSE_ENERGY_PROFILE"] = "1"
+    ref = load_reference_state("n2", x, cache_dir=str(CACHE_DIR), compute_rdms=False)
+    n_spatial = ref["n_spatial"]
+    pool = MixedOperatorPool(singles=tuple(range(n_spatial)), quartets=())
+    thetas = np.asarray(json.loads(row["Thetas_JSON"]), dtype=float)
+    pairs = _parse_pairs(row["Rotation_Pairs_JSON"])
+    diagonals = mixed_pool_diagonals(ref["basis_bitstrings"], pool, n_spatial)
+    allowed = _exact_symmetry_allowed_indices(ref)
+    sectors = _mixed_pool_sectors(ref, pool, allowed_indices=allowed)
+    return {**row, **_diagnose_diagonals(ref, thetas, diagonals, sectors, pairs=pairs)}
+
+
 def run_parity_seniority(
     input_csv: Path = TABLES_DIR / "n2_parity_seniority_summary.csv",
     output_csv: Path = TABLES_DIR / "n2_parity_seniority_action_diagnostics.csv",
@@ -513,17 +569,7 @@ def run_parity_seniority(
     for row in rows:
         x = float(row["Geometry_Param"])
         print(f"[action] parity_seniority x={x}", flush=True)
-        ref = load_reference_state("n2", x, cache_dir=str(CACHE_DIR), compute_rdms=False)
-        n_spatial = ref["n_spatial"]
-        pool = MixedOperatorPool(singles=tuple(range(n_spatial)), quartets=())
-        thetas = np.asarray(json.loads(row["Thetas_JSON"]), dtype=float)
-        pairs = _parse_pairs(row["Rotation_Pairs_JSON"])
-        diagonals = mixed_pool_diagonals(ref["basis_bitstrings"], pool, n_spatial)
-        allowed = _exact_symmetry_allowed_indices(ref)
-        sectors = _mixed_pool_sectors(ref, pool, allowed_indices=allowed)
-        out_rows.append(
-            {**row, **_diagnose_diagonals(ref, thetas, diagonals, sectors, pairs=pairs)}
-        )
+        out_rows.append(_diagnose_one_geometry(row))
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with output_csv.open("w", newline="", encoding="utf-8") as handle:

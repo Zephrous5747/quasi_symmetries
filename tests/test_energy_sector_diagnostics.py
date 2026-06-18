@@ -12,10 +12,14 @@ from quasi_symmetries.diagnostics.n2_action import (
     _coarse_entropy,
     _quartet_sectors,
 )
-from quasi_symmetries.optimization import (
+from quasi_symmetries.diagnostics.sparse_energy import (
     SparseSubspaceHamiltonian,
-    build_U_from_thetas,
+    build_rotated_h_sub_csc,
     decoupled_energy_lazy,
+    energy_sector_diagnostics_sparse,
+)
+from quasi_symmetries.optimization import (
+    build_U_from_thetas,
     pair_list_for_n,
 )
 from quasi_symmetries.optimization.quartet import (
@@ -136,6 +140,34 @@ class _EnergySectorTests:
         h_rot = RotatedHamiltonian(self.ref["h_sub"], action)
         edec_opt, _, _ = decoupled_energy_lazy(h_rot, self.sectors)
         self.assertLess(abs(edec_opt - float(self.ref["energy_fci"])), 0.05)
+
+    def test_h_rot_sparse_edec_matches_rotated_hamiltonian_wrapper(self) -> None:
+        if self.molecule != "h4":
+            self.skipTest("H4-only regression for build_rotated_h_sub_csc energy path.")
+        pairs = pair_list_for_n(self.n_spatial)
+        thetas = 0.1 * np.random.default_rng(91).standard_normal(len(pairs))
+        u = build_U_from_thetas(self.n_spatial, thetas, pairs)
+        action = OrbitalRotationAction(u, self.ref["basis_bitstrings"], self.n_spatial)
+        h_rot = build_rotated_h_sub_csc(self.ref["h_sub"], action, max_workers=1)
+        h_sparse = SparseSubspaceHamiltonian(h_rot)
+        edec_sparse, _, _ = decoupled_energy_lazy(h_sparse, self.sectors, states_per_sector=None)
+
+        h_wrapper = RotatedHamiltonian(self.ref["h_sub"], action)
+        edec_wrapper, _, _ = decoupled_energy_lazy(
+            h_wrapper,
+            self.sectors,
+            states_per_sector=None,
+        )
+        self.assertAlmostEqual(edec_sparse, edec_wrapper, places=8)
+
+        result = energy_sector_diagnostics_sparse(
+            h_sparse,
+            self.sectors,
+            float(self.ref["energy_fci"]),
+            tol=1e-3,
+            states_per_sector=None,
+        )
+        self.assertAlmostEqual(result["Edec"], edec_wrapper, places=8)
 
 
 class TestEnergySectorDiagnosticsH4(_EnergySectorTests, unittest.TestCase):

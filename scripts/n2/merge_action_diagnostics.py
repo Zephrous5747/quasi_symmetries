@@ -6,7 +6,7 @@ import csv
 import math
 from pathlib import Path
 
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, LEGACY_ABC_TABLES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 
 ACTION_COLS = [
     "Build_Seconds",
@@ -118,9 +118,9 @@ def main() -> None:
         quartet=True,
     )
     merge_tables(
-        tables / "n2_quasi_symmetry_fixed_abc.csv",
-        tables / "n2_fixed_abc_action_diagnostics.csv",
-        tables / "n2_quasi_symmetry_fixed_abc.csv",
+        LEGACY_ABC_TABLES_DIR / "n2_quasi_symmetry_fixed_abc.csv",
+        LEGACY_ABC_TABLES_DIR / "n2_fixed_abc_action_diagnostics.csv",
+        LEGACY_ABC_TABLES_DIR / "n2_quasi_symmetry_fixed_abc.csv",
         quartet=False,
     )
     merge_tables(

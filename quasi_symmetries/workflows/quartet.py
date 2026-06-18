@@ -13,7 +13,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from quasi_symmetries.config import CACHE_DIR as DEFAULT_CACHE_DIR
-from quasi_symmetries.config import OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import LEGACY_ABC_TABLES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 from quasi_symmetries.hamiltonian.cache import load_reference_state
 from quasi_symmetries.hamiltonian.geometry import default_grid_for_molecule
 from quasi_symmetries.optimization import (
@@ -57,7 +57,7 @@ def _default_csv_name(molecule: str) -> str:
 
 
 def _local_abc_csv_name(molecule: str) -> str:
-    return str(TABLES_DIR / f"{molecule}_quasi_symmetry_local_abc.csv")
+    return str(LEGACY_ABC_TABLES_DIR / f"{molecule}_quasi_symmetry_local_abc.csv")
 
 
 def _load_local_abc_thetas(
