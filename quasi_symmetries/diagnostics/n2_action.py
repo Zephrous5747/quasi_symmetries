@@ -18,7 +18,7 @@ from typing import Iterable
 
 import numpy as np
 
-from quasi_symmetries.config import CACHE_DIR, LEGACY_ABC_TABLES_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, LEGACY_ABC_TABLES_DIR, table_path
 from quasi_symmetries.diagnostics.mixed_pool import (
     mixed_pool_diagonals,
     mixed_pool_sectors,
@@ -477,9 +477,13 @@ def run_fixed_abc(
 
 
 def run_quartets(
-    input_csv: Path = TABLES_DIR / "n2_quartet_variance_summary.csv",
-    output_csv: Path = TABLES_DIR / "n2_quartet_action_diagnostics.csv",
+    input_csv: Path | None = None,
+    output_csv: Path | None = None,
 ) -> None:
+    if input_csv is None:
+        input_csv = table_path("n2", "quartet_variance_summary.csv")
+    if output_csv is None:
+        output_csv = table_path("n2", "quartet_action_diagnostics.csv")
     with input_csv.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     out_rows = []
@@ -511,9 +515,13 @@ def run_quartets(
 
 
 def run_mixed_pool(
-    input_csv: Path = TABLES_DIR / "n2_mixed_pool_summary.csv",
-    output_csv: Path = TABLES_DIR / "n2_mixed_pool_action_diagnostics.csv",
+    input_csv: Path | None = None,
+    output_csv: Path | None = None,
 ) -> None:
+    if input_csv is None:
+        input_csv = table_path("n2", "mixed_pool_summary.csv")
+    if output_csv is None:
+        output_csv = table_path("n2", "mixed_pool_action_diagnostics.csv")
     with input_csv.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     out_rows = []
@@ -560,9 +568,13 @@ def _diagnose_one_geometry(
 
 
 def run_parity_seniority(
-    input_csv: Path = TABLES_DIR / "n2_parity_seniority_summary.csv",
-    output_csv: Path = TABLES_DIR / "n2_parity_seniority_action_diagnostics.csv",
+    input_csv: Path | None = None,
+    output_csv: Path | None = None,
 ) -> None:
+    if input_csv is None:
+        input_csv = table_path("n2", "parity_seniority_summary.csv")
+    if output_csv is None:
+        output_csv = table_path("n2", "parity_seniority_action_diagnostics.csv")
     with input_csv.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     out_rows = []
@@ -580,7 +592,7 @@ def run_parity_seniority(
 
 
 def benchmark_first_quartet() -> None:
-    with (TABLES_DIR / "n2_quartet_variance_summary.csv").open(newline="", encoding="utf-8") as handle:
+    with table_path("n2", "quartet_variance_summary.csv").open(newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
     x = float(row["Geometry_Param"])
     ref = load_reference_state("n2", x, cache_dir=str(CACHE_DIR))
@@ -598,7 +610,7 @@ def benchmark_first_quartet() -> None:
 
 
 def benchmark_first_mixed_pool() -> None:
-    with (TABLES_DIR / "n2_mixed_pool_summary.csv").open(newline="", encoding="utf-8") as handle:
+    with table_path("n2", "mixed_pool_summary.csv").open(newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
     x = float(row["Geometry_Param"])
     ref = load_reference_state("n2", x, cache_dir=str(CACHE_DIR), compute_rdms=False)

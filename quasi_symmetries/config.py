@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from quasi_symmetries.hamiltonian.geometry import basis_cache_slug
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 CACHE_DIR = REPO_ROOT / "hamiltonian_cache"
@@ -35,6 +37,9 @@ OP_COEF_TOL = 1e-12
 # Fixed-N determinant counts above this use sparse / subspace-only post-processing.
 DENSE_SUBSPACE_MAX = 8_000
 
+# Coupled-energy greedy selection (perturbation pre-filter near-degeneracy).
+COUPLED_ENERGY_DEGENERACY_FLOOR = 1e-8
+
 # Sparse energy-sector diagnostics (N2-scale).
 STATES_PER_SECTOR = 20
 if "SPARSE_ENERGY_WORKERS" in os.environ:
@@ -44,3 +49,41 @@ else:
 
 # Backward-compatible alias used by cache module
 DEFAULT_CACHE_DIR = str(CACHE_DIR)
+
+
+def normalized_basis_slug(basis: str | None = None) -> str:
+    """Short basis tag for artifact paths (``sto3g`` when basis is default STO-3G)."""
+    slug = basis_cache_slug(basis if basis is not None else BASIS)
+    return slug or "sto3g"
+
+
+def molecule_basis_dir(root: Path, molecule: str, basis: str | None = None) -> Path:
+    return root / molecule.lower() / normalized_basis_slug(basis)
+
+
+def heatmap_optimization_dir(molecule: str, basis: str | None = None) -> Path:
+    return molecule_basis_dir(IMAGES_DIR / "orbital_heatmaps", molecule, basis) / "optimization"
+
+
+def heatmap_canonical_dir(molecule: str, basis: str, backend: str) -> Path:
+    return (
+        molecule_basis_dir(IMAGES_DIR / "orbital_heatmaps", molecule, basis)
+        / "canonical"
+        / backend.lower()
+    )
+
+
+def diagnostics_dir(molecule: str, basis: str | None = None) -> Path:
+    return molecule_basis_dir(IMAGES_DIR / "diagnostics", molecule, basis)
+
+
+def scans_dir(molecule: str, basis: str | None = None) -> Path:
+    return molecule_basis_dir(IMAGES_DIR / "scans", molecule, basis)
+
+
+def table_dir(molecule: str, basis: str | None = None) -> Path:
+    return molecule_basis_dir(TABLES_DIR, molecule, basis)
+
+
+def table_path(molecule: str, name: str, basis: str | None = None) -> Path:
+    return table_dir(molecule, basis) / name

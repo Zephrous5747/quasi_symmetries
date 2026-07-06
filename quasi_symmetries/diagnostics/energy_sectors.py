@@ -7,7 +7,11 @@ from dataclasses import dataclass
 import numpy as np
 import scipy.sparse.linalg as spla
 
-from quasi_symmetries.config import OP_COEF_TOL
+from quasi_symmetries.config import COUPLED_ENERGY_DEGENERACY_FLOOR, OP_COEF_TOL
+from quasi_symmetries.diagnostics.coupled_energy_core import (
+    all_sector_eigenpair_candidates as _all_sector_eigenpair_candidates,
+    greedy_coupled_energy as _greedy_coupled_energy,
+)
 from quasi_symmetries.fermion.bitstring import (
     build_cisd_basis_bitstrings,
     mode_is_occupied,
@@ -189,36 +193,10 @@ def decoupled_energy_test(H_dense, sectors_dict):
     return best_E, best_key, best_dim
 
 
-def _all_sector_eigenpair_candidates(
-    sector_data,
-) -> list[tuple[float, object, np.ndarray, int]]:
-    """All block eigenpairs (energy, sector key, full-space vector, block index)."""
-    candidates: list[tuple[float, object, np.ndarray, int]] = []
-    for key, data in sector_data.items():
-        for block_index, (energy, vector) in enumerate(
-            zip(data["evals"], data["evecs_full"])
-        ):
-            candidates.append((float(energy), key, vector, int(block_index)))
-    candidates.sort(key=lambda item: item[0])
-    return candidates
-
-
-def _max_coupling_to_span(
-    h_dense: np.ndarray,
-    candidate: np.ndarray,
-    chosen_vecs: list[np.ndarray],
-) -> float:
-    if not chosen_vecs:
-        return float("inf")
-    h_cand = h_dense @ candidate
-    return max(float(abs(np.vdot(chosen, h_cand))) for chosen in chosen_vecs)
-
-
 def _projected_ground_energy(h_dense: np.ndarray, vecs: list[np.ndarray]) -> float:
-    v = np.column_stack(vecs)
-    h_proj = v.conj().T @ h_dense @ v
-    h_proj = 0.5 * (h_proj + h_proj.conj().T)
-    return float(np.linalg.eigvalsh(h_proj)[0])
+    from quasi_symmetries.diagnostics.coupled_energy_core import projected_ground_energy_dense
+
+    return projected_ground_energy_dense(h_dense, vecs)
 
 
 def coupled_energy_test(
@@ -229,6 +207,7 @@ def coupled_energy_test(
     max_total_vectors=None,
     coupling_tol: float = 1e-12,
     energy_change_tol: float = 1e-12,
+    degeneracy_floor: float = COUPLED_ENERGY_DEGENERACY_FLOOR,
 ):
     """
     Coupled-energy test over sector-block eigenvectors.
@@ -243,58 +222,16 @@ def coupled_energy_test(
     ground energy matches E_exact within tol.
     """
     candidates = _all_sector_eigenpair_candidates(sector_data)
-    if not candidates:
-        return None, 0, False, []
-
-    if max_total_vectors is None:
-        max_total_vectors = len(candidates)
-
-    chosen_vecs: list[np.ndarray] = []
-    chosen_keys: list[tuple[object, int]] = []
-    chosen_indices: set[int] = set()
-    e_proj: float | None = None
-    converged = False
-
-    while True:
-        added_this_pass = False
-        for index, (_energy, key, vec, block_index) in enumerate(candidates):
-            if index in chosen_indices:
-                continue
-            if len(chosen_vecs) >= max_total_vectors:
-                break
-
-            if chosen_vecs:
-                if _max_coupling_to_span(H_dense, vec, chosen_vecs) <= coupling_tol:
-                    continue
-                e_new = _projected_ground_energy(H_dense, [*chosen_vecs, vec])
-                if e_proj is not None:
-                    if E_exact is not None:
-                        if abs(e_new - E_exact) >= abs(e_proj - E_exact) - energy_change_tol:
-                            continue
-                    elif abs(e_new - e_proj) <= energy_change_tol:
-                        continue
-            else:
-                e_new = _projected_ground_energy(H_dense, [vec])
-
-            chosen_indices.add(index)
-            chosen_vecs.append(vec)
-            chosen_keys.append((key, block_index))
-            e_proj = e_new
-            added_this_pass = True
-
-            if E_exact is not None and abs(e_proj - E_exact) <= tol:
-                converged = True
-                break
-
-        if converged:
-            break
-        if not added_this_pass or len(chosen_vecs) >= max_total_vectors:
-            break
-
-    if E_exact is not None and e_proj is not None and abs(e_proj - E_exact) <= tol:
-        converged = True
-
-    return e_proj, len(chosen_vecs), converged, chosen_keys
+    return _greedy_coupled_energy(
+        candidates,
+        lambda vector: H_dense @ vector,
+        e_exact=E_exact,
+        tol=tol,
+        max_total_vectors=max_total_vectors,
+        coupling_tol=coupling_tol,
+        energy_change_tol=energy_change_tol,
+        degeneracy_floor=degeneracy_floor,
+    )
 def bo_like_coupled_energy_test(H_dense, sector_data):
     """
     BO-like coupled test:

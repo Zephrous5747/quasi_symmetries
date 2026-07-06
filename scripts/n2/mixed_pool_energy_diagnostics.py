@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from quasi_symmetries.config import TABLES_DIR
+from quasi_symmetries.config import table_path
 from quasi_symmetries.diagnostics.n2_action import benchmark_first_mixed_pool, run_mixed_pool
 
 
@@ -14,12 +14,12 @@ def main() -> None:
     parser.add_argument(
         "--input-csv",
         type=Path,
-        default=TABLES_DIR / "n2_mixed_pool_summary.csv",
+        default=table_path("n2", "mixed_pool_summary.csv"),
     )
     parser.add_argument(
         "--output-csv",
         type=Path,
-        default=TABLES_DIR / "n2_mixed_pool_action_diagnostics.csv",
+        default=table_path("n2", "mixed_pool_action_diagnostics.csv"),
     )
     parser.add_argument(
         "--benchmark-first",

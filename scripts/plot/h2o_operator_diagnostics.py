@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from quasi_symmetries.config import IMAGES_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, diagnostics_dir, table_path
 
 import argparse
 import csv
@@ -155,7 +155,7 @@ def main() -> None:
     parser.add_argument(
         "--seniority-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_parity_seniority_diagnostics.csv",
+        default=table_path("h2o", "parity_seniority_diagnostics.csv"),
     )
     parser.add_argument(
         "--fixed-abc-csv",
@@ -166,12 +166,12 @@ def main() -> None:
     parser.add_argument(
         "--mixed-pool-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_mixed_pool_energy_diagnostics_rerun.csv",
+        default=table_path("h2o", "mixed_pool_energy_diagnostics.csv"),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=IMAGES_DIR / "quartets/h2o_mixed_pool_diagnostics_rerun.png",
+        default=diagnostics_dir("h2o") / "mixed_pool_diagnostics.png",
     )
     args = parser.parse_args()
     plot_h2o_operator_diagnostics(

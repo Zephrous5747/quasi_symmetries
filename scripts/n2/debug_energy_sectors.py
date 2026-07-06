@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from quasi_symmetries.config import CACHE_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, table_path
 from quasi_symmetries.diagnostics.mixed_pool import mixed_pool_diagonals
 from quasi_symmetries.diagnostics.n2_action import (
     OrbitalRotationAction,
@@ -83,14 +83,14 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.workflow == "parity_seniority":
-        csv_path = TABLES_DIR / "n2_parity_seniority_summary.csv"
+        csv_path = table_path("n2", "parity_seniority_summary.csv")
         row = _load_row(csv_path, args.x)
         ref = load_reference_state("n2", args.x, cache_dir=str(CACHE_DIR), compute_rdms=False)
         pool = MixedOperatorPool(singles=tuple(range(ref["n_spatial"])), quartets=())
         pairs = _parse_pairs(row["Rotation_Pairs_JSON"])
         thetas = np.asarray(json.loads(row["Thetas_JSON"]), dtype=float)
     else:
-        csv_path = TABLES_DIR / "n2_mixed_pool_summary.csv"
+        csv_path = table_path("n2", "mixed_pool_summary.csv")
         row = _load_row(csv_path, args.x)
         ref = load_reference_state("n2", args.x, cache_dir=str(CACHE_DIR), compute_rdms=False)
         pool = _parse_pool(row, ref["n_spatial"])

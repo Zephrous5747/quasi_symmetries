@@ -435,7 +435,8 @@ def generate_and_save(
     **geometry_kwargs: Any,
 ) -> Path:
     """Generate one geometry point and write HDF5 cache."""
-    out_path = cache_path(molecule, x, cache_dir=cache_dir, **geometry_kwargs)
+    cache_kwargs = {**geometry_kwargs, "basis": basis}
+    out_path = cache_path(molecule, x, cache_dir=cache_dir, **cache_kwargs)
     if out_path.is_file() and not overwrite:
         print(f"[skip] {out_path.name} already exists")
         return out_path
@@ -455,7 +456,7 @@ def generate_and_save(
         out_path,
         molecule=molecule,
         x=x,
-        geometry_kwargs=geometry_kwargs,
+        geometry_kwargs=cache_kwargs,
     )
     print(
         f"[ok] {out_path.name} | E_HF={ref['energy_hf']:.8f} "
@@ -469,6 +470,8 @@ def generate_scan(
     grid=None,
     cache_dir: str | Path = DEFAULT_CACHE_DIR,
     overwrite: bool = False,
+    *,
+    basis: str = BASIS,
     **kwargs: Any,
 ) -> list[Path]:
     """Generate HDF5 caches for all points on a molecule grid."""
@@ -480,6 +483,7 @@ def generate_scan(
                 x,
                 cache_dir=cache_dir,
                 overwrite=overwrite,
+                basis=basis,
                 **geom_kwargs,
             )
         )

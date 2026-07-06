@@ -1,4 +1,4 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, table_path
 """Rerun H2O quartet baselines with independent edge sets and warm-started rotations."""
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ def main() -> None:
     parser.add_argument(
         "--warm-start-csv",
         type=Path,
-        default=TABLES_DIR / 'h2o_quartet_baseline_summary.csv"),
+        default=table_path("h2o", "quartet_baseline_summary.csv"),
         help="Previous quartet summary CSV with Thetas_JSON warm starts.",
     )
     parser.add_argument(
         "--output-csv",
         type=Path,
-        default=TABLES_DIR / 'h2o_quartet_baseline_summary.csv"),
+        default=table_path("h2o", "quartet_baseline_summary.csv"),
     )
     parser.add_argument("--n-restarts", type=int, default=1)
     parser.add_argument("--max-workers", type=int, default=3)

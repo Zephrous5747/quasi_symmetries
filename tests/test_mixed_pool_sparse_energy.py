@@ -29,6 +29,21 @@ def _toy_sparse_hamiltonian() -> tuple[sp.csc_matrix, dict[tuple[int, ...], list
     return h_sub, sectors, e_exact
 
 
+def _toy_sparse_coupled_hamiltonian() -> tuple[sp.csc_matrix, dict[str, list[int]], float]:
+    """Three-state off-diagonal toy requiring K_coupled > 1."""
+    dim = 3
+    h_dense = np.zeros((dim, dim), dtype=np.complex128)
+    h_dense[0, 0] = 0.0
+    h_dense[1, 1] = 0.08
+    h_dense[2, 2] = 0.12
+    h_dense[0, 2] = h_dense[2, 0] = 0.02
+    h_dense[1, 2] = h_dense[2, 1] = 0.05
+    h_sub = sp.csc_matrix(h_dense)
+    sectors = {"A": [0, 1], "B": [2]}
+    e_exact = float(np.linalg.eigvalsh(h_dense)[0])
+    return h_sub, sectors, e_exact
+
+
 class MixedPoolSparseEnergyTests(unittest.TestCase):
     def test_sector_count_matches_mixed_pool_sectors(self) -> None:
         h_sub, sectors, _ = _toy_sparse_hamiltonian()
@@ -90,6 +105,24 @@ class MixedPoolSparseEnergyTests(unittest.TestCase):
         self.assertEqual(k_coupled, 1)
         self.assertTrue(converged)
         self.assertAlmostEqual(e_coupled, e_dec, places=10)
+
+    def test_coupled_energy_lazy_converges_with_k_gt_one(self) -> None:
+        h_sub, sectors, e_exact = _toy_sparse_coupled_hamiltonian()
+        h_op = SparseSubspaceHamiltonian(h_sub)
+        from quasi_symmetries.optimization import diagonalize_sector_blocks
+
+        sector_data = diagonalize_sector_blocks(h_sub.toarray(), sectors)
+        e_coupled, k_coupled, converged, keys = coupled_energy_lazy(
+            h_op,
+            sectors,
+            E_exact=e_exact,
+            tol=1e-10,
+            sector_data=sector_data,
+        )
+        self.assertTrue(converged)
+        self.assertGreaterEqual(k_coupled, 3)
+        self.assertIn(("A", 1), keys)
+        self.assertAlmostEqual(e_coupled, e_exact, places=10)
 
 
 if __name__ == "__main__":

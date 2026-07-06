@@ -276,6 +276,10 @@ def load_symmetry_labels(
     if mol not in _POINT_GROUPS:
         return None
 
+    meta_basis = str(ref.get("meta", {}).get("basis", "sto-3g")).strip().lower()
+    if meta_basis not in {"", "sto-3g", "sto3g"}:
+        return None
+
     n_spatial = int(ref["n_spatial"])
     try:
         labels = fallback_sto3g_irrep_labels(mol, n_spatial)

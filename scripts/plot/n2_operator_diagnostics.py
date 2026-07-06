@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import matplotlib.pyplot as plt
+import numpy as np
 
-from quasi_symmetries.config import IMAGES_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, diagnostics_dir, table_path
 
 SERIES = (
     ("seniority_canonical", "Parity Seniorities (canonical)", "#000000", "x", ":"),
@@ -36,6 +39,50 @@ def _as_float(row: dict[str, str], field: str) -> float:
         return math.nan
 
 
+def _optimized_commutator(row: dict[str, str]) -> float:
+    for field in ("Sum_CommSq_Optimized", "Sum_CommSq_Action"):
+        value = _as_float(row, field)
+        if math.isfinite(value):
+            return value
+    return math.nan
+
+
+@lru_cache(maxsize=16)
+def _identity_commutator_cached(geometry_param: float, parity_seniority: bool, pool_key: str) -> float:
+    from quasi_symmetries.diagnostics.mixed_pool import (
+        MixedOperatorPool,
+        _mixed_pool_commutativity,
+    )
+    from quasi_symmetries.diagnostics.n2_action import _parse_pool
+    from quasi_symmetries.hamiltonian.cache import load_reference_state
+
+    ref = load_reference_state("n2", geometry_param, cache_dir=str(CACHE_DIR), compute_rdms=False)
+    n_spatial = ref["n_spatial"]
+    if parity_seniority:
+        pool = MixedOperatorPool(singles=tuple(range(n_spatial)), quartets=())
+    else:
+        row_stub = {"Pool_Singles": pool_key.split("|", 1)[0], "Pool_Quartets": pool_key.split("|", 1)[1]}
+        pool = _parse_pool(row_stub, n_spatial)
+    psi = np.asarray(ref["v_sub"], dtype=np.complex128)
+    psi = psi / np.linalg.norm(psi)
+    comm_id, _ = _mixed_pool_commutativity(
+        ref["h_sub"],
+        psi,
+        ref["basis_bitstrings"],
+        pool,
+        n_spatial,
+    )
+    return float(comm_id)
+
+
+def _identity_commutator(row: dict[str, str], *, parity_seniority: bool) -> float:
+    value = _as_float(row, "Sum_CommSq_Identity")
+    if math.isfinite(value):
+        return value
+    pool_key = f"{row.get('Pool_Singles', '')}|{row.get('Pool_Quartets', '')}"
+    return _identity_commutator_cached(float(row["Geometry_Param"]), parity_seniority, pool_key)
+
+
 def _read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return sorted(csv.DictReader(handle), key=lambda row: float(row["Geometry_Param"]))
@@ -45,7 +92,7 @@ def _points(
     rows: list[dict[str, str]],
     *,
     variance_field: str,
-    comm_field: str,
+    comm_field: str | Callable[[dict[str, str]], float],
     edec_field: str,
     k_field: str,
 ) -> list[dict[str, float]]:
@@ -53,11 +100,15 @@ def _points(
     for row in rows:
         e_fci = _as_float(row, "E_FCI")
         e_dec = _as_float(row, edec_field)
+        if callable(comm_field):
+            comm_sq = comm_field(row)
+        else:
+            comm_sq = _as_float(row, comm_field)
         points.append(
             {
                 "x": _as_float(row, "Geometry_Param"),
                 "variance": _as_float(row, variance_field),
-                "comm_sq": _as_float(row, comm_field),
+                "comm_sq": comm_sq,
                 "edec_error": abs(e_dec - e_fci) if math.isfinite(e_dec) and math.isfinite(e_fci) else math.nan,
                 "k": _as_float(row, k_field),
             }
@@ -82,7 +133,6 @@ def plot_n2_operator_diagnostics(
         raise ValueError("Both CSV inputs must contain at least one geometry row.")
 
     seniority_has_energy = bool(seniority_rows[0].get("Edec_Optimized", "").strip())
-    seniority_comm = "Sum_CommSq_Action" if seniority_has_energy else ""
     seniority_edec_id = "Edec_Identity" if seniority_has_energy else ""
     seniority_edec_opt = "Edec_Optimized" if seniority_has_energy else ""
     seniority_k_id = "Kcoupled_Identity" if seniority_has_energy else ""
@@ -92,28 +142,28 @@ def plot_n2_operator_diagnostics(
         "seniority_canonical": _points(
             seniority_rows,
             variance_field="V_Identity",
-            comm_field="",
+            comm_field=lambda row: _identity_commutator(row, parity_seniority=True),
             edec_field=seniority_edec_id,
             k_field=seniority_k_id,
         ),
         "seniority_optimized": _points(
             seniority_rows,
             variance_field="V_Optimized",
-            comm_field=seniority_comm,
+            comm_field=_optimized_commutator,
             edec_field=seniority_edec_opt,
             k_field=seniority_k_opt,
         ),
         "mixed_canonical": _points(
             mixed_rows,
             variance_field="V_Identity",
-            comm_field="",
+            comm_field=lambda row: _identity_commutator(row, parity_seniority=False),
             edec_field="Edec_Identity",
             k_field="Kcoupled_Identity",
         ),
         "mixed_optimized": _points(
             mixed_rows,
             variance_field="V_Optimized",
-            comm_field="Sum_CommSq_Action",
+            comm_field=_optimized_commutator,
             edec_field="Edec_Optimized",
             k_field="Kcoupled_Optimized",
         ),
@@ -153,10 +203,11 @@ def plot_n2_operator_diagnostics(
                 if positive:
                     ax.set_yscale("log")
 
+    axes[0, 0].legend(loc="best", frameon=False)
+    axes[0, 1].legend(loc="best", frameon=False)
+
     for ax in axes[-1, :]:
         ax.set_xlabel(r"N$_2$ bond length ($\AA$)")
-
-    axes[0, 0].legend(loc="best", frameon=False)
     fig.suptitle(title)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,17 +221,17 @@ def main() -> None:
     parser.add_argument(
         "--seniority-csv",
         type=Path,
-        default=TABLES_DIR / "n2_parity_seniority_summary.csv",
+        default=table_path("n2", "parity_seniority_summary.csv"),
     )
     parser.add_argument(
         "--mixed-pool-csv",
         type=Path,
-        default=TABLES_DIR / "n2_mixed_pool_summary.csv",
+        default=table_path("n2", "mixed_pool_summary.csv"),
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=IMAGES_DIR / "quartets/n2_mixed_pool_diagnostics.png",
+        default=diagnostics_dir("n2") / "mixed_pool_diagnostics.png",
     )
     args = parser.parse_args()
     plot_n2_operator_diagnostics(

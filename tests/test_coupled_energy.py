@@ -6,6 +6,14 @@ import unittest
 
 import numpy as np
 
+from quasi_symmetries.diagnostics.coupled_energy_core import (
+    all_sector_eigenpair_candidates,
+    augment_h_proj,
+    h_cols_from_h_vecs,
+    perturbation_may_improve,
+    projected_ground_energy_dense,
+    trial_ground_energy_incremental,
+)
 from quasi_symmetries.optimization import (
     coupled_energy_test,
     decoupled_energy_test,
@@ -157,6 +165,105 @@ class CoupledEnergyTest(unittest.TestCase):
         self.assertIn(("A", 1), keys_new)
         self.assertLess(e_new, e_two_ground)
         self.assertLess(abs(e_new - e_exact), abs(e_two_ground - e_exact))
+
+    def test_incremental_matches_reference_projected_energy(self) -> None:
+        for factory in (_toy_hamiltonian_and_sectors, _toy_with_excited_cross_coupling):
+            h, sector_data, _ = factory()
+            candidates = all_sector_eigenpair_candidates(sector_data)
+            chosen_vecs: list[np.ndarray] = []
+            h_vecs: list[np.ndarray] = []
+            h_proj: np.ndarray | None = None
+
+            for energy, _key, vec, _block_index in candidates[:8]:
+                if not chosen_vecs:
+                    reference = projected_ground_energy_dense(h, [vec])
+                    incremental = float(energy)
+                else:
+                    reference = projected_ground_energy_dense(h, [*chosen_vecs, vec])
+                    h_cols = h_cols_from_h_vecs(h_vecs, vec)
+                    incremental = trial_ground_energy_incremental(
+                        h_proj, h_cols, float(energy)
+                    )
+                self.assertAlmostEqual(incremental, reference, places=10)
+
+                if h_proj is None:
+                    h_proj = np.array([[float(energy)]], dtype=np.complex128)
+                else:
+                    h_cols = h_cols_from_h_vecs(h_vecs, vec)
+                    h_proj = augment_for_test(h_proj, h_cols, float(energy))
+                chosen_vecs.append(vec)
+                h_vecs.append(h @ vec)
+
+    def test_greedy_output_matches_baseline_snapshot(self) -> None:
+        h, sector_data, e_exact = _toy_hamiltonian_and_sectors()
+        e_proj, k, converged, keys = coupled_energy_test(
+            h, sector_data, E_exact=e_exact, tol=1e-10
+        )
+        self.assertTrue(converged)
+        self.assertEqual(k, 2)
+        self.assertEqual(keys, [("A", 0), ("B", 0)])
+        self.assertAlmostEqual(e_proj, e_exact, places=10)
+
+        h2, sector_data2, e_exact2 = _toy_with_excited_cross_coupling()
+        e_proj2, k2, converged2, keys2 = coupled_energy_test(
+            h2, sector_data2, E_exact=e_exact2, tol=1e-10
+        )
+        self.assertTrue(converged2)
+        self.assertGreaterEqual(k2, 3)
+        self.assertIn(("A", 1), keys2)
+        self.assertAlmostEqual(e_proj2, e_exact2, places=10)
+
+    def test_destructive_interference_not_prefiltered(self) -> None:
+        psi0 = np.array([1.0, 1.0], dtype=np.complex128) / np.sqrt(2.0)
+        h_cols = [0.05, -0.05]
+        e_proj = -0.01
+        e_new = 0.2
+        e_exact = -0.02
+
+        max_coupling = max(abs(value) for value in h_cols)
+        v0 = complex(np.vdot(psi0, np.asarray(h_cols, dtype=np.complex128)))
+        self.assertGreater(max_coupling, 1e-12)
+        self.assertLess(abs(v0), 1e-12)
+
+        self.assertTrue(
+            perturbation_may_improve(
+                psi0,
+                h_cols,
+                e_proj,
+                e_new,
+                e_proj,
+                e_exact,
+                coupling_tol=1e-12,
+                energy_change_tol=1e-12,
+                degeneracy_floor=1e-8,
+            )
+        )
+
+        h, sector_data, e_exact = _toy_with_excited_cross_coupling()
+        e_coupled, k_coupled, converged, keys = coupled_energy_test(
+            h, sector_data, E_exact=e_exact, tol=1e-10
+        )
+        self.assertTrue(converged)
+        self.assertGreaterEqual(k_coupled, 3)
+        self.assertIn(("A", 1), keys)
+        self.assertAlmostEqual(e_coupled, e_exact, places=10)
+
+
+def augment_for_test(
+    h_proj: np.ndarray | None,
+    h_cols: list[complex],
+    h_new_new: float,
+) -> np.ndarray:
+    if h_proj is None:
+        return np.array([[h_new_new]], dtype=np.complex128)
+    k = h_proj.shape[0]
+    h_trial = np.zeros((k + 1, k + 1), dtype=np.complex128)
+    h_trial[:k, :k] = h_proj
+    h_cols_arr = np.asarray(h_cols, dtype=np.complex128)
+    h_trial[:k, k] = h_cols_arr
+    h_trial[k, :k] = h_cols_arr.conj()
+    h_trial[k, k] = h_new_new
+    return 0.5 * (h_trial + h_trial.conj().T)
 
 
 if __name__ == "__main__":

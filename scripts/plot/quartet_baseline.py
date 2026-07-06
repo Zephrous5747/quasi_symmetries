@@ -1,4 +1,4 @@
-from quasi_symmetries.config import IMAGES_DIR, LEGACY_ABC_TABLES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import LEGACY_ABC_TABLES_DIR, diagnostics_dir, table_path
 """Plot quartet baseline diagnostics from summary CSV output."""
 
 from __future__ import annotations
@@ -178,13 +178,13 @@ def main() -> None:
     parser.add_argument(
         "--csv",
         type=Path,
-        default=OPT_RESULTS_DIR / "h4_linear_quartet_baseline_summary.csv",
+        default=table_path("h4_linear", "quartet_baseline_summary.csv"),
         help="Quartet baseline summary CSV.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=IMAGES_DIR / "quartets/h4_linear_quartet_baseline_diagnostics.png",
+        default=diagnostics_dir("h4_linear") / "quartet_baseline_diagnostics.png",
         help="Output figure path.",
     )
     parser.add_argument(

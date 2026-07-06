@@ -1,4 +1,4 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, heatmap_optimization_dir, table_path
 """Optimize a fixed mixed seniority+quartet pool on H2O across all geometries."""
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ def main() -> None:
     parser.add_argument(
         "--output-csv",
         type=Path,
-        default=TABLES_DIR / 'h2o_mixed_pool_summary.csv"),
+        default=table_path("h2o", "mixed_pool_summary.csv"),
     )
     parser.add_argument("--n-restarts", type=int, default=1)
     parser.add_argument("--max-workers", type=int, default=3)
@@ -187,7 +187,7 @@ def main() -> None:
     print(f"[ok] wrote {len(rows)} rows to {args.output_csv}", flush=True)
 
     # Save rotations + variance cache for plotting.
-    out_dir = IMAGES_DIR / 'orbital_heatmaps/h2o")
+    out_dir = heatmap_optimization_dir("h2o")
     out_dir.mkdir(parents=True, exist_ok=True)
     from scripts.plot.orbital_heatmaps import parity_variance_matrix
 

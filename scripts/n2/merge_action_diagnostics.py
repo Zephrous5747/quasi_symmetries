@@ -6,7 +6,7 @@ import csv
 import math
 from pathlib import Path
 
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, LEGACY_ABC_TABLES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import LEGACY_ABC_TABLES_DIR, table_dir
 
 ACTION_COLS = [
     "Build_Seconds",
@@ -78,7 +78,7 @@ def merge_tables(
         raise ValueError(f"No rows found in {base_path}")
 
     fieldnames = list(base_rows[0].keys())
-    for column in ACTION_COLS:
+    for column in (*ACTION_COLS, *MERGE_FIELDS.keys()):
         if column not in fieldnames:
             fieldnames.append(column)
 
@@ -110,11 +110,11 @@ def merge_tables(
 
 
 def main() -> None:
-    tables = TABLES_DIR
+    tables = table_dir("n2")
     merge_tables(
-        tables / "n2_quartet_variance_summary.csv",
-        tables / "n2_quartet_action_diagnostics.csv",
-        tables / "n2_quartet_baseline_summary.csv",
+        tables / "quartet_variance_summary.csv",
+        tables / "quartet_action_diagnostics.csv",
+        tables / "quartet_baseline_summary.csv",
         quartet=True,
     )
     merge_tables(
@@ -124,15 +124,15 @@ def main() -> None:
         quartet=False,
     )
     merge_tables(
-        tables / "n2_mixed_pool_summary.csv",
-        tables / "n2_mixed_pool_action_diagnostics.csv",
-        tables / "n2_mixed_pool_summary.csv",
+        tables / "mixed_pool_summary.csv",
+        tables / "mixed_pool_action_diagnostics.csv",
+        tables / "mixed_pool_summary.csv",
         quartet=False,
     )
     merge_tables(
-        tables / "n2_parity_seniority_summary.csv",
-        tables / "n2_parity_seniority_action_diagnostics.csv",
-        tables / "n2_parity_seniority_summary.csv",
+        tables / "parity_seniority_summary.csv",
+        tables / "parity_seniority_action_diagnostics.csv",
+        tables / "parity_seniority_summary.csv",
         quartet=False,
     )
 

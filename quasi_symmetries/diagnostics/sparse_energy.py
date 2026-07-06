@@ -10,7 +10,15 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
-from quasi_symmetries.config import SPARSE_ENERGY_MAX_WORKERS, STATES_PER_SECTOR
+from quasi_symmetries.config import (
+    COUPLED_ENERGY_DEGENERACY_FLOOR,
+    SPARSE_ENERGY_MAX_WORKERS,
+    STATES_PER_SECTOR,
+)
+from quasi_symmetries.diagnostics.coupled_energy_core import (
+    all_sector_eigenpair_candidates as _all_sector_eigenpair_candidates,
+    greedy_coupled_energy as _greedy_coupled_energy,
+)
 
 
 def _default_workers() -> int:
@@ -244,19 +252,6 @@ def build_rotated_h_sub_csc(
     return h_rot
 
 
-def _all_sector_eigenpair_candidates(
-    sector_data,
-) -> list[tuple[float, object, np.ndarray, int]]:
-    candidates: list[tuple[float, object, np.ndarray, int]] = []
-    for key, data in sector_data.items():
-        for block_index, (energy, vector) in enumerate(
-            zip(data["evals"], data["evecs_full"])
-        ):
-            candidates.append((float(energy), key, vector, int(block_index)))
-    candidates.sort(key=lambda item: item[0])
-    return candidates
-
-
 def decoupled_energy_from_sector_data(
     sector_data: dict,
 ) -> tuple[float, object, int]:
@@ -308,6 +303,7 @@ def coupled_energy_lazy(
     max_total_vectors: int | None = None,
     coupling_tol: float = 1e-12,
     energy_change_tol: float = 1e-12,
+    degeneracy_floor: float = COUPLED_ENERGY_DEGENERACY_FLOOR,
     *,
     sector_data: dict | None = None,
     max_workers: int | None = None,
@@ -322,80 +318,16 @@ def coupled_energy_lazy(
             states_per_sector=states_per_sector,
         )
     candidates = _all_sector_eigenpair_candidates(sector_data)
-    if not candidates:
-        return None, 0, False, []
-
-    if max_total_vectors is None:
-        max_total_vectors = len(candidates)
-
-    chosen_vecs: list[np.ndarray] = []
-    chosen_keys: list[tuple[object, int]] = []
-    chosen_indices: set[int] = set()
-    e_proj: float | None = None
-    converged = False
-
-    while True:
-        added_this_pass = False
-        for index, (_energy, key, vec, block_index) in enumerate(candidates):
-            if index in chosen_indices:
-                continue
-            if len(chosen_vecs) >= max_total_vectors:
-                break
-
-            if chosen_vecs:
-                if _max_coupling_to_span_lazy(h_op, vec, chosen_vecs) <= coupling_tol:
-                    continue
-                e_new = _projected_ground_energy_lazy(h_op, [*chosen_vecs, vec])
-                if e_proj is not None:
-                    if E_exact is not None:
-                        if abs(e_new - E_exact) >= abs(e_proj - E_exact) - energy_change_tol:
-                            continue
-                    elif abs(e_new - e_proj) <= energy_change_tol:
-                        continue
-            else:
-                e_new = _projected_ground_energy_lazy(h_op, [vec])
-
-            chosen_indices.add(index)
-            chosen_vecs.append(vec)
-            chosen_keys.append((key, block_index))
-            e_proj = e_new
-            added_this_pass = True
-
-            if E_exact is not None and abs(e_proj - E_exact) <= tol:
-                converged = True
-                break
-
-        if converged:
-            break
-        if not added_this_pass or len(chosen_vecs) >= max_total_vectors:
-            break
-
-    if E_exact is not None and e_proj is not None and abs(e_proj - E_exact) <= tol:
-        converged = True
-
-    return e_proj, len(chosen_vecs), converged, chosen_keys
-
-
-def _projected_ground_energy_lazy(h_op: Any, vecs: list[np.ndarray]) -> float:
-    k = len(vecs)
-    h_proj = np.zeros((k, k), dtype=np.complex128)
-    for i in range(k):
-        h_v_i = h_op.dot(vecs[i])
-        for j in range(k):
-            h_proj[i, j] = np.vdot(vecs[j], h_v_i)
-    h_proj = 0.5 * (h_proj + h_proj.conj().T)
-    return float(np.linalg.eigvalsh(h_proj)[0])
-
-
-def _max_coupling_to_span_lazy(
-    h_op: Any,
-    candidate: np.ndarray,
-    chosen_vecs: list[np.ndarray],
-) -> float:
-    if not chosen_vecs:
-        return float("inf")
-    h_cand = h_op.dot(candidate)
-    return max(float(abs(np.vdot(chosen, h_cand))) for chosen in chosen_vecs)
+    return _greedy_coupled_energy(
+        candidates,
+        h_op.dot,
+        e_exact=E_exact,
+        tol=tol,
+        max_total_vectors=max_total_vectors,
+        coupling_tol=coupling_tol,
+        energy_change_tol=energy_change_tol,
+        degeneracy_floor=degeneracy_floor,
+    )
 
 
 def energy_sector_diagnostics_sparse(

@@ -27,6 +27,25 @@ def _encode_geometry_param(value: float, scale: int) -> str:
     return str(int(round(float(value) * scale)))
 
 
+def basis_cache_slug(basis: str | None) -> str:
+    """Short suffix for non-default basis sets in cache basenames (empty for STO-3G)."""
+    if basis is None:
+        return ""
+    normalized = str(basis).strip().lower().replace(" ", "")
+    if normalized in {"", "sto-3g", "sto3g"}:
+        return ""
+    known = {
+        "6-31g": "631g",
+        "6-31g*": "631gs",
+        "6-31g**": "631gss",
+        "cc-pvdz": "ccpvdz",
+    }
+    if normalized in known:
+        return known[normalized]
+    slug = normalized.replace("*", "s").replace("+", "p").replace("-", "")
+    return slug or "basis"
+
+
 def hamiltonian_cache_basename(molecule: str, x: float, **kwargs: Any) -> str:
     """
     Basename for cached Hamiltonian HDF5 files (no extension).
@@ -44,23 +63,25 @@ def hamiltonian_cache_basename(molecule: str, x: float, **kwargs: Any) -> str:
         )
 
     if mol == "lih":
-        return f"lih_{_encode_geometry_param(x, 10)}"
-
-    if mol == "h2o":
+        base = f"lih_{_encode_geometry_param(x, 10)}"
+    elif mol == "h2o":
         angle = float(kwargs.get("hoh_angle_deg", 104.5))
-        return f"h2o_{_encode_geometry_param(x, 1000)}_{_encode_geometry_param(angle, 10)}"
-
-    if mol == "h4_rectangle":
+        base = f"h2o_{_encode_geometry_param(x, 1000)}_{_encode_geometry_param(angle, 10)}"
+    elif mol == "h4_rectangle":
         aspect_ratio = float(kwargs.get("aspect_ratio", 1.5))
-        return (
+        base = (
             f"h4_rectangle_{_encode_geometry_param(x, 10)}"
             f"_{_encode_geometry_param(aspect_ratio, 10)}"
         )
+    elif mol in {"h4_linear", "h4_square", "n2"}:
+        base = f"{mol}_{_encode_geometry_param(x, 10)}"
+    else:
+        raise ValueError(f"Unsupported molecule '{molecule}'.")
 
-    if mol in {"h4_linear", "h4_square", "n2"}:
-        return f"{mol}_{_encode_geometry_param(x, 10)}"
-
-    raise ValueError(f"Unsupported molecule '{molecule}'.")
+    basis_slug = basis_cache_slug(kwargs.get("basis"))
+    if basis_slug:
+        return f"{base}_{basis_slug}"
+    return base
 
 
 def cache_filename(molecule: str, x: float, **kwargs: Any) -> str:

@@ -33,6 +33,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
+        "--basis",
+        default="sto-3g",
+        help="Gaussian basis set name (PySCF / OpenFermion).",
+    )
+    parser.add_argument(
         "--hoh-angle-deg",
         type=float,
         default=104.5,
@@ -64,6 +69,7 @@ def main() -> None:
         "hoh_angle_deg": args.hoh_angle_deg,
         "aspect_ratio": args.aspect_ratio,
     }
+    basis = args.basis
 
     if args.all_default:
         for mol in sorted(SUPPORTED_MOLECULES):
@@ -73,6 +79,7 @@ def main() -> None:
                 grid=default_grid_for_molecule(mol),
                 cache_dir=cache_dir,
                 overwrite=args.overwrite,
+                basis=basis,
                 **geom_extras,
             )
         return
@@ -86,6 +93,7 @@ def main() -> None:
             args.x,
             cache_dir=cache_dir,
             overwrite=args.overwrite,
+            basis=basis,
             **geom_extras,
         )
         return
@@ -99,6 +107,7 @@ def main() -> None:
         grid=grid,
         cache_dir=cache_dir,
         overwrite=args.overwrite,
+        basis=basis,
         **geom_extras,
     )
 

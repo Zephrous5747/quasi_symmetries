@@ -1,4 +1,4 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, heatmap_optimization_dir, table_path
 """Compute dense energy indicators for H2O mixed-pool optimizations (parallel)."""
 
 from __future__ import annotations
@@ -95,17 +95,17 @@ def main() -> None:
     parser.add_argument(
         "--summary-csv",
         type=Path,
-        default=TABLES_DIR / 'h2o_mixed_pool_summary.csv"),
+        default=table_path("h2o", "mixed_pool_summary.csv"),
     )
     parser.add_argument(
         "--npz-dir",
         type=Path,
-        default=IMAGES_DIR / 'orbital_heatmaps/h2o"),
+        default=heatmap_optimization_dir("h2o"),
     )
     parser.add_argument(
         "--output-csv",
         type=Path,
-        default=TABLES_DIR / 'h2o_mixed_pool_energy_diagnostics.csv"),
+        default=table_path("h2o", "mixed_pool_energy_diagnostics.csv"),
     )
     parser.add_argument("--max-workers", type=int, default=3)
     args = parser.parse_args()

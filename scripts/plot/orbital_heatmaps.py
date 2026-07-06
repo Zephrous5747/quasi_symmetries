@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from quasi_symmetries.config import IMAGES_DIR, LEGACY_ABC_OPT_RESULTS_DIR, LEGACY_ABC_TABLES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import (
+    IMAGES_DIR,
+    LEGACY_ABC_OPT_RESULTS_DIR,
+    LEGACY_ABC_TABLES_DIR,
+    diagnostics_dir,
+    heatmap_optimization_dir,
+    table_path,
+)
 
 import argparse
 import csv
@@ -61,12 +68,12 @@ def _geometry_tag(x: float) -> str:
 def _default_paths(molecule: str) -> tuple[Path, Path]:
     mol = molecule.lower()
     if mol == "h2o":
-        seniority = TABLES_DIR / "h2o_parity_seniority_diagnostics.csv"
+        seniority = table_path("h2o", "parity_seniority_diagnostics.csv")
     elif mol == "n2":
-        seniority = TABLES_DIR / "n2_parity_seniority_summary.csv"
+        seniority = table_path("n2", "parity_seniority_summary.csv")
     else:
         seniority = LEGACY_ABC_TABLES_DIR / f"{mol}_quasi_symmetry_fixed_abc.csv"
-    quartet = TABLES_DIR / f"{mol}_quartet_baseline_summary.csv"
+    quartet = table_path(mol, "quartet_baseline_summary.csv")
     return seniority, quartet
 
 
@@ -551,6 +558,15 @@ def process_system(
 
 
 def main() -> None:
+    import warnings
+
+    warnings.warn(
+        "scripts/plot/orbital_heatmaps.py is deprecated. "
+        "Use scripts/h2o/parity_optimization_heatmaps.py or "
+        "scripts/h2o/generate_basis_variance_heatmaps.py instead.",
+        DeprecationWarning,
+        stacklevel=1,
+    )
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", default="hamiltonian_cache")
     parser.add_argument(

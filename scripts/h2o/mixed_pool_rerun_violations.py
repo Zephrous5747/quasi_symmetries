@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from quasi_symmetries.config import IMAGES_DIR, TABLES_DIR
+from quasi_symmetries.config import heatmap_optimization_dir, table_path
 from quasi_symmetries.diagnostics.mixed_pool import mixed_pool_energy_indicators
 from quasi_symmetries.hamiltonian.cache import load_reference_state
 from quasi_symmetries.optimization import (
@@ -370,17 +370,17 @@ def main() -> None:
     parser.add_argument(
         "--mixed-summary-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_mixed_pool_summary.csv",
+        default=table_path("h2o", "mixed_pool_summary.csv"),
     )
     parser.add_argument(
         "--parity-seniority-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_parity_seniority_diagnostics.csv",
+        default=table_path("h2o", "parity_seniority_diagnostics.csv"),
     )
     parser.add_argument(
         "--npz-dir",
         type=Path,
-        default=IMAGES_DIR / "orbital_heatmaps/h2o",
+        default=heatmap_optimization_dir("h2o"),
     )
     parser.add_argument("--n-restarts", type=int, default=20)
     parser.add_argument("--optimizer-maxfev", type=int, default=3000)

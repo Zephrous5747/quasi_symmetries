@@ -1,7 +1,8 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
 """Plot mixed seniority+quartet pool scan: summary graph and highlighted variance maps."""
 
 from __future__ import annotations
+
+from quasi_symmetries.config import heatmap_optimization_dir, scans_dir, table_path
 
 import argparse
 import csv
@@ -149,44 +150,23 @@ def main() -> None:
     parser.add_argument(
         "--csv",
         type=Path,
-        default=TABLES_DIR / 'h2o_mixed_pool_summary.csv"),
+        default=table_path("h2o", "mixed_pool_summary.csv"),
     )
     parser.add_argument(
         "--npz-dir",
         type=Path,
-        default=IMAGES_DIR / 'orbital_heatmaps/h2o"),
+        default=heatmap_optimization_dir("h2o"),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=IMAGES_DIR / 'mixed_pool/h2o"),
+        default=scans_dir("h2o"),
     )
     parser.add_argument("--vmin", type=float, default=1e-4)
     parser.add_argument("--vmax", type=float, default=1.0)
     args = parser.parse_args()
 
-    plot_cost_scan(args.csv, args.output_dir / "h2o_mixed_pool_cost_scan.png")
-
-    with args.csv.open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-
-    for row in rows:
-        x = float(row["Geometry_Param"])
-        tag = f"{x:.6g}".replace(".", "p")
-        npz_path = args.npz_dir / f"h2o_{tag}_mixed_pool_data.npz"
-        if not npz_path.is_file():
-            print(f"[skip] missing {npz_path}")
-            continue
-        job = SystemJob("h2o", x, {"hoh_angle_deg": 104.5})
-        out_path = args.output_dir / f"h2o_{tag}_mixed_pool_variance.png"
-        plot_geometry_variance(
-            npz_path,
-            job=job,
-            output_path=out_path,
-            vmin=args.vmin,
-            vmax=args.vmax,
-        )
-        print(f"[ok] wrote {out_path}")
+    plot_cost_scan(args.csv, args.output_dir / "mixed_pool_cost_scan.png")
 
 
 if __name__ == "__main__":

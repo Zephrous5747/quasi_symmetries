@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, diagnostics_dir, table_path
 
 import argparse
 import csv
@@ -247,32 +247,32 @@ def main() -> None:
     parser.add_argument(
         "--mixed-warm-start-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_mixed_pool_energy_diagnostics_rerun.csv",
+        default=table_path("h2o", "mixed_pool_energy_diagnostics.csv"),
     )
     parser.add_argument(
         "--seniority-warm-start-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_parity_seniority_diagnostics.csv",
+        default=table_path("h2o", "parity_seniority_diagnostics.csv"),
     )
     parser.add_argument(
         "--mixed-summary-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_mixed_pool_summary_rerun.csv",
+        default=table_path("h2o", "mixed_pool_summary.csv"),
     )
     parser.add_argument(
         "--mixed-diagnostics-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_mixed_pool_energy_diagnostics_rerun.csv",
+        default=table_path("h2o", "mixed_pool_energy_diagnostics.csv"),
     )
     parser.add_argument(
         "--seniority-diagnostics-csv",
         type=Path,
-        default=TABLES_DIR / "h2o_parity_seniority_diagnostics.csv",
+        default=table_path("h2o", "parity_seniority_diagnostics.csv"),
     )
     parser.add_argument(
         "--plot-output",
         type=Path,
-        default=IMAGES_DIR / "quartets/h2o_mixed_pool_diagnostics_rerun.png",
+        default=diagnostics_dir("h2o") / "mixed_pool_diagnostics.png",
     )
     parser.add_argument("--optimizer-maxfev", type=int, default=500)
     parser.add_argument("--max-workers", type=int, default=3)

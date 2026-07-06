@@ -10,10 +10,16 @@ scripts/              CLI entry points (runners, plots, analysis)
 legacy/abc/           Archived fixed/shared/local ABC workflows and results
 tests/                unittest suite
 hamiltonian_cache/    Precomputed HDF5 Hamiltonians
-tables/               CSV scan summaries (quartets, parity seniority, mixed pools)
-opt_results/          Detailed optimization outputs
-images/               Generated plots
+tables/               CSV summaries: tables/{molecule}/{basis}/
+opt_results/          Scratch runs (archived under opt_results/scratch/)
+images/               Plots and NPZ caches:
+                      - orbital_heatmaps/{molecule}/{basis}/optimization/
+                      - orbital_heatmaps/{molecule}/{basis}/canonical/{exact|dmrg}/
+                      - diagnostics/{molecule}/{basis}/
+                      - scans/{molecule}/{basis}/
 ```
+
+Path helpers live in `quasi_symmetries.config` (`table_path`, `heatmap_optimization_dir`, etc.).
 
 ## Setup
 

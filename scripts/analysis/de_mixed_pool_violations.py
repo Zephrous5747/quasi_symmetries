@@ -1,4 +1,4 @@
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, heatmap_optimization_dir, table_path
 """Differential-evolution mixed-pool rerun for remaining violation geometries."""
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def de_optimize_geometry(x: float, *, cache_dir: str = "hamiltonian_cache") -> d
             thetas, pool, ref["v_sub"], ref["basis_bitstrings"], ref["n_spatial"], pairs
         )
 
-    summary_csv = TABLES_DIR / 'h2o_mixed_pool_summary.csv")
+    summary_csv = table_path("h2o", "mixed_pool_summary.csv")
     mix_row = next(
         row
         for row in csv.DictReader(summary_csv.open(newline="", encoding="utf-8"))
@@ -125,9 +125,9 @@ def de_optimize_geometry(x: float, *, cache_dir: str = "hamiltonian_cache") -> d
 
 def main() -> None:
     rows = [de_optimize_geometry(x) for x in GEOMETRIES]
-    summary_csv = TABLES_DIR / 'h2o_mixed_pool_summary.csv")
+    summary_csv = table_path("h2o", "mixed_pool_summary.csv")
     _merge_rows(summary_csv, rows, MIXED_POOL_CSV_FIELDS)
-    npz_dir = IMAGES_DIR / 'orbital_heatmaps/h2o")
+    npz_dir = heatmap_optimization_dir("h2o")
     for row in rows:
         _save_npz(row, npz_dir)
     print(f"[ok] updated {len(rows)} geometries in {summary_csv}", flush=True)

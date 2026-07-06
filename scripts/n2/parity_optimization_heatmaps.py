@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from quasi_symmetries.config import CACHE_DIR, IMAGES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import CACHE_DIR, heatmap_optimization_dir, table_path
 
 import argparse
 import csv
@@ -69,11 +69,11 @@ SUMMARY_FIELDS = [
     "Elapsed_Seconds",
 ]
 
-N2_HEATMAP_DIR = IMAGES_DIR / "orbital_heatmaps" / "n2"
-N2_SENIORITY_CSV = TABLES_DIR / "n2_parity_seniority_summary.csv"
-N2_MIXED_CSV = TABLES_DIR / "n2_mixed_pool_summary.csv"
+N2_HEATMAP_DIR = heatmap_optimization_dir("n2")
+N2_SENIORITY_CSV = table_path("n2", "parity_seniority_summary.csv")
+N2_MIXED_CSV = table_path("n2", "mixed_pool_summary.csv")
 N2_MIXED_SINGLES = (0, 1, 2, 3)
-N2_POOL_SELECTION_JSON = TABLES_DIR / "n2_mixed_pool_selection.json"
+N2_POOL_SELECTION_JSON = table_path("n2", "mixed_pool_selection.json")
 
 
 def _load_seniority_rows(csv_path: Path = N2_SENIORITY_CSV) -> list[dict]:
@@ -624,7 +624,7 @@ def main() -> None:
         grid = [float(v) for v in default_grid_for_molecule("n2")]
 
     args.heatmap_dir.mkdir(parents=True, exist_ok=True)
-    OPT_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    N2_HEATMAP_DIR.mkdir(parents=True, exist_ok=True)
 
     seniority_rows: list[dict] = []
     if not args.skip_seniority:

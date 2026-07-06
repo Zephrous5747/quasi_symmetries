@@ -13,7 +13,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from quasi_symmetries.config import CACHE_DIR as DEFAULT_CACHE_DIR
-from quasi_symmetries.config import LEGACY_ABC_TABLES_DIR, OPT_RESULTS_DIR, TABLES_DIR
+from quasi_symmetries.config import LEGACY_ABC_TABLES_DIR, table_path
 from quasi_symmetries.hamiltonian.cache import load_reference_state
 from quasi_symmetries.hamiltonian.geometry import default_grid_for_molecule
 from quasi_symmetries.optimization import (
@@ -53,7 +53,7 @@ def _split_workflow_kwargs(kwargs: dict[str, Any]) -> tuple[str, dict[str, Any]]
 
 
 def _default_csv_name(molecule: str) -> str:
-    return str(TABLES_DIR / f"{molecule}_quartet_baseline_summary.csv")
+    return str(table_path(molecule, "quartet_baseline_summary.csv"))
 
 
 def _local_abc_csv_name(molecule: str) -> str:
